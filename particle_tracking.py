@@ -5,7 +5,7 @@ import os
 import matplotlib.pyplot as plt
 import csv
 
-def track_particle_burns(tiff_folder_path, threshold, frame_rate, max_distance=35, search_previous_frames=3, stop=False, stop_frame=200):
+def track_particle_burns(tiff_folder_path, threshold, frame_rate, max_distance=35, search_previous_frames=1, stop=False, stop_frame=200):
     # Get a sorted list of all TIFF files in the folder
     tiff_files = sorted(glob.glob(os.path.join(tiff_folder_path, "*.tif")))
     if not tiff_files:
@@ -181,3 +181,4 @@ def track_particle_burns(tiff_folder_path, threshold, frame_rate, max_distance=3
             # writer.writerow(total_data)
     print(f"Results written to {output_csv}")
     return
+

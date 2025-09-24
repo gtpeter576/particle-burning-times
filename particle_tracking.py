@@ -5,7 +5,7 @@ import os
 import matplotlib.pyplot as plt
 import csv
 
-def track_particle_burns(tiff_folder_path, threshold, frame_rate, max_distance=35, search_previous_frames=1, stop=False, stop_frame=200):
+def track_particle_burns(tiff_folder_path, threshold, frame_rate, max_distance=35, search_previous_frames=1, stop=False, stop_frame=200, verbose=True):
     # Get a sorted list of all TIFF files in the folder
     tiff_files = sorted(glob.glob(os.path.join(tiff_folder_path, "*.tif")))
     if not tiff_files:
@@ -26,7 +26,8 @@ def track_particle_burns(tiff_folder_path, threshold, frame_rate, max_distance=3
 
         if stop and frame_counter > stop_frame:
             break
-        print(f"Processing frame {frame_counter}/{len(tiff_files)}: {tiff_file}")
+        if verbose and frame_counter % 1000 == 0:
+            print(f"Processing frame {frame_counter}/{len(tiff_files)}: {tiff_file}")
 
         # Read the TIFF image as grayscale
         frame = cv2.imread(tiff_file, cv2.IMREAD_ANYDEPTH)
@@ -84,7 +85,8 @@ def track_particle_burns(tiff_folder_path, threshold, frame_rate, max_distance=3
 
             # If a match is found, update the particle position, end coordinates, end frame and lifetime
             if best_match is not None:
-                print("new centroid matched to a particle", frame_counter - particle_end_frames[particle_id], "frames prior to current frame")
+                #uncomment for more verbose output
+                #print("new centroid matched to a particle", frame_counter - particle_end_frames[particle_id], "frames prior to current frame")
                 (cx, cy, w, h) = current_centroids[best_match]
                 coords = (cx, cy)
                 particle_coordinates[particle_id][frame_counter] = coords
@@ -99,7 +101,8 @@ def track_particle_burns(tiff_folder_path, threshold, frame_rate, max_distance=3
         for i in unmatched_centroids:
             (px, py, w, h) = current_centroids[i]
             coords = (px, py)
-            print(f"New particle detected at frame {frame_counter}: {coords}; id: {next_particle_id}")
+            #uncomment for more verbose output
+            #print(f"New particle detected at frame {frame_counter}: {coords}; id: {next_particle_id}")
             particle_lifetimes[next_particle_id] = 0
 
             particle_start_frames[next_particle_id] = frame_counter
@@ -181,4 +184,3 @@ def track_particle_burns(tiff_folder_path, threshold, frame_rate, max_distance=3
             # writer.writerow(total_data)
     print(f"Results written to {output_csv}")
     return
-

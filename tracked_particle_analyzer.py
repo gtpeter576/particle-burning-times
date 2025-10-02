@@ -7,7 +7,40 @@ import numpy as np
 import random
 from scipy import stats
 
-def analyze_particles(file_path, fps, laser_margin, min_brightness, test_name):
+def laser_location(x, laserxs, lasery_lower, lasery_upper):
+
+    # laserxs.insert(0, 0)
+    # laserxs.append(1280)
+
+    i = 0
+    while i < len(laserxs) and x > laserxs[i]:
+        i += 1
+
+    if i == 0:
+        slope_upper = (lasery_upper[i+1] - lasery_upper[i]) / (laserxs[i+1] - laserxs[i])
+        slope_lower = (lasery_lower[i+1] - lasery_lower[i]) / (laserxs[i+1] - laserxs[i])
+        y_upper = slope_upper*(x - laserxs[i]) + lasery_upper[i]
+        y_lower = slope_lower*(x - laserxs[i]) + lasery_lower[i]
+        
+    elif i == len(laserxs):
+        slope_upper = (lasery_upper[i-1] - lasery_upper[i-2]) / (laserxs[i-1] - laserxs[i-2])
+        slope_lower = (lasery_lower[i-1] - lasery_lower[i-2]) / (laserxs[i-1] - laserxs[i-2])
+        y_upper = slope_upper*(x - laserxs[i-1]) + lasery_upper[i-1]
+        y_lower = slope_lower*(x - laserxs[i-1]) + lasery_lower[i-1]
+    else:
+        laserx_before = laserxs[i-1]
+        laserx_after = laserxs[i]
+        slope_upper = (lasery_upper[i] - lasery_upper[i-1]) / (laserx_after - laserx_before)
+        y_upper = slope_upper*(x - laserx_before) + lasery_upper[i-1]
+
+        slope_lower = (lasery_lower[i] - lasery_lower[i-1]) / (laserx_after - laserx_before)
+        y_lower = slope_lower*(x - laserx_before) + lasery_lower[i-1]
+
+    return y_upper, y_lower
+    
+    
+
+def analyze_particles(file_path, fps, min_brightness, test_name, laserxs, laserys_lower, laserys_upper):
 
     #open csv file
     with open(file_path) as f:
@@ -64,18 +97,15 @@ def analyze_particles(file_path, fps, laser_margin, min_brightness, test_name):
     startxs = {}
     for id in data_dict.keys():
         starty = data_dict[id]['ycoords'][0]
-        # if starty < 400:
-        #     print(id)
-        #     print(data_dict[id]['frames'][0])
         startys[id] = starty
         startx = data_dict[id]['xcoords'][0]
         startxs[id] = startx
     startys_mm = [y*0.021 for y in startys.values() if y is not None]
     mean_starty = np.mean(list(startys.values()))
-    print(mean_starty)
 
     #find y position of particles at their brightest point
     brightestys = {}
+    brightestxs = {}
     for id in data_dict.keys():
         brightnesses = data_dict[id]['brightnesses']
         if all(b is None for b in brightnesses):
@@ -83,15 +113,17 @@ def analyze_particles(file_path, fps, laser_margin, min_brightness, test_name):
         max_brightness = max([b for b in brightnesses if b is not None])
         max_index = brightnesses.index(max_brightness)
         brightesty = data_dict[id]['ycoords'][max_index]
+        brightestx = data_dict[id]['xcoords'][max_index]
         if brightesty is not None:
             brightestys[id] = brightesty
+            brightestxs[id] = brightestx
 
     #plot histogram of y positions at brightest point
     #red margins indicate laser position (+- 8 pixels)
     fig = plt.figure()
     hist = plt.hist(brightestys.values(), bins=50, color='blue', alpha=0.7)
-    plt.plot([mean_starty+laser_margin, mean_starty+laser_margin], [0, 800], color='red', linestyle='--')
-    plt.plot([mean_starty-laser_margin, mean_starty-laser_margin], [0, 800], color='red', linestyle='--')
+    # plt.plot([mean_starty+laser_margin, mean_starty+laser_margin], [0, 800], color='red', linestyle='--')
+    # plt.plot([mean_starty-laser_margin, mean_starty-laser_margin], [0, 800], color='red', linestyle='--')
     plt.title('y positions at brightest point, ' + test_name)
     fig.canvas.manager.set_window_title('y-Positions at Brightes Point, ' + test_name)
 
@@ -125,9 +157,15 @@ def analyze_particles(file_path, fps, laser_margin, min_brightness, test_name):
             ignition_times.pop(id)
 
     #trim particles that reach their brightest point inside the laser
+
+    
+
     ids = list(data_dict.keys())
     for id in ids:
-        if brightestys[id] > mean_starty - laser_margin and brightestys[id] < mean_starty + laser_margin:
+        brightesty = brightestys[id]
+        brightestx = brightestxs[id]
+        y_upper, y_lower = laser_location(brightestx, laserxs, laserys_lower, laserys_upper)
+        if brightestys[id] > y_lower and brightestys[id] < y_upper:
             data_dict.pop(id)
             max_brightnesses.pop(id)
             startys.pop(id)
@@ -152,7 +190,7 @@ def analyze_particles(file_path, fps, laser_margin, min_brightness, test_name):
     plt.plot(max_brightnesses.values(), burn_times.values(), '.')
     plt.title('burn time vs max brightness, ' + test_name)
     fig.canvas.manager.set_window_title('Burn Time vs. Max Brightness, ' + test_name)
-    print(len(data_dict.keys()))
+    print(' number of particles analyzed for ' + test_name + ': ' + str(len(data_dict.keys())))
 
     rs = []
     num_random = 12
@@ -174,16 +212,16 @@ def analyze_particles(file_path, fps, laser_margin, min_brightness, test_name):
         id = list(data_dict.keys())[int(r*len(data_dict.keys()))]
         plt.plot(data_dict[id]['xcoords'], data_dict[id]['ycoords'], '.-')
     plt.title('random sample of particle tracks, ' + test_name)
-    plt.plot([0, 800], [mean_starty+laser_margin, mean_starty+laser_margin], color='red', linestyle='--')
-    plt.plot([0, 800], [mean_starty-laser_margin, mean_starty-laser_margin], color='red', linestyle='--')
+    # plt.plot([0, 800], [mean_starty+laser_margin, mean_starty+laser_margin], color='red', linestyle='--')
+    # plt.plot([0, 800], [mean_starty-laser_margin, mean_starty-laser_margin], color='red', linestyle='--')
     fig.canvas.manager.set_window_title('Random Sample of Particle Tracks, ' + test_name)
 
     #plot starting positions of all particles
     fig = plt.figure()
     plt.plot(startxs.values(), startys.values(), '.')
     plt.title('starting positions of all particles, ' + test_name)
-    plt.plot([0, 800], [mean_starty+laser_margin, mean_starty+laser_margin], color='red', linestyle='--')
-    plt.plot([0, 800], [mean_starty-laser_margin, mean_starty-laser_margin], color='red', linestyle='--')
+    # plt.plot([0, 800], [mean_starty+laser_margin, mean_starty+laser_margin], color='red', linestyle='--')
+    # plt.plot([0, 800], [mean_starty-laser_margin, mean_starty-laser_margin], color='red', linestyle='--')
     fig.canvas.manager.set_window_title('Statrting Position of all Particles, ' + test_name)
 
     #plot all particle tracks
@@ -191,8 +229,8 @@ def analyze_particles(file_path, fps, laser_margin, min_brightness, test_name):
     for id in data_dict.keys():
         plt.plot(data_dict[id]['xcoords'], [800 - y for y in data_dict[id]['ycoords']], 'b-')
     plt.title('all particle tracks, ' + test_name)
-    plt.plot([0, 800], [800 - mean_starty-laser_margin, 800 - mean_starty-laser_margin], color='red', linestyle='--')
-    plt.plot([0, 800], [800 - mean_starty+laser_margin, 800 - mean_starty+laser_margin], color='red', linestyle='--')
+    # plt.plot([0, 800], [800 - mean_starty-laser_margin, 800 - mean_starty-laser_margin], color='red', linestyle='--')
+    # plt.plot([0, 800], [800 - mean_starty+laser_margin, 800 - mean_starty+laser_margin], color='red', linestyle='--')
     fig.canvas.manager.set_window_title('All Particle Tracks, ' + test_name)
 
     #plot histogram of ignition times
@@ -217,23 +255,34 @@ def analyze_particles(file_path, fps, laser_margin, min_brightness, test_name):
     return list(burn_times.values()), list(ignition_times.values())
 
 if __name__ == "__main__":
-    fps = 20000
-    laser_margin = 15
-    min_brightness = 10000
-    file_names = [r"C:\Users\Griffin\Documents\Research\15 Sep particle tracking\test2_calibrated_particle_tracking_results.csv",
-                  r"C:\Users\Griffin\Documents\Research\15 Sep particle tracking\test3_calibrated_particle_tracking_results.csv"]
-    test_names = ['Al-Ga 10', 'Al-Ga 5']
+    fps = 25000
+    min_brightness = 30000
+    file_names = [r"F:\20250925\test3\test3_calibrated_particle_tracking_results.csv",
+                  r"F:\20250925\test4\test4_calibrated_particle_tracking_results.csv"]
+    test_names = ['Al-Ga 10', 'Al-In']
     burn_times = []
     ignition_times = []
+    with open(r"F:\20250925\beam locations\beam locations.csv") as f:
+        data = f.readlines()
+
+    laserxs = []
+    laserys_lower = []
+    laserys_upper = []
+    for line in data[1:]:
+        vals = line.split(",")
+        laserxs.append(float(vals[0]))
+        laserys_upper.append(float(vals[4]))
+        laserys_lower.append(float(vals[5]))
+
     for i in range(len(file_names)):
-        testi_burn_times, testi_ignition_times = analyze_particles(file_names[i], fps, laser_margin, min_brightness, test_names[i])
+        testi_burn_times, testi_ignition_times = analyze_particles(file_names[i], fps, min_brightness, test_names[i], laserxs, laserys_lower, laserys_upper)
         burn_times.append(testi_burn_times)
         ignition_times.append(testi_ignition_times)
     #uncomment to perform a statistical t-test
-    burn_times = np.array(burn_times, dtype=object)
-    ignition_times = np.array(ignition_times, dtype=object)
-    t_stat, p_val = stats.ttest_ind(burn_times[0], burn_times[1], equal_var=False)
-    print(f"t-statistic for burn times: {t_stat}, p-value: {p_val}")
-    t_stat, p_val = stats.ttest_ind(ignition_times[0], ignition_times[1], equal_var=False)
-    print(f"t-statistic for ignition times: {t_stat}, p-value: {p_val}")
+    # burn_times = np.array(burn_times, dtype=object)
+    # ignition_times = np.array(ignition_times, dtype=object)
+    # t_stat, p_val = stats.ttest_ind(burn_times[0], burn_times[1], equal_var=False)
+    # print(f"t-statistic for burn times: {t_stat}, p-value: {p_val}")
+    # t_stat, p_val = stats.ttest_ind(ignition_times[0], ignition_times[1], equal_var=False)
+    # print(f"t-statistic for ignition times: {t_stat}, p-value: {p_val}")
     plt.show()

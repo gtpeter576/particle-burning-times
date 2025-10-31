@@ -4,108 +4,184 @@ import glob
 import os
 import matplotlib.pyplot as plt
 import csv
+from scipy.optimize import linear_sum_assignment
+import time
 
-def track_particle_burns(tiff_folder_path, threshold, frame_rate, max_distance=35, search_previous_frames=1, stop=False, stop_frame=200, verbose=True, brightness_mode='mean'):
-    # Get a sorted list of all TIFF files in the folder
+class Particle:
+    def __init__(self, frame, pos, brightness, size):
+        self.history = {}
+        self.history[frame] = {}
+        self.current_frame = frame
+        self.history[frame]['pos'] = pos
+        self.history[frame]['brightness'] = brightness
+        self.history[frame]['size'] = size
+        self.missed_frames = 0
+
+    def update(self, frame, pos, brightness, size):
+        self.current_frame = frame
+        self.history[frame] = {}
+        self.history[frame]['pos'] = pos
+        self.history[frame]['brightness'] = brightness
+        self.history[frame]['size'] = size
+        self.missed_frames = 0
+    
+    def predict(self, predict_frame):
+        
+        frame_list = sorted(list(self.history.keys()))
+
+        #predict the position at (input) frame based on current velocity
+        current_pos = self.history[self.current_frame]['pos']
+        if len(frame_list) < 2:
+            x_pos, y_pos = current_pos
+            predicted_pos = (x_pos, y_pos-3) #predict initial speed is 1m/s, or about 3 pix per frame
+        else:
+            prev_x, prev_y = self.history[frame_list[-2]]['pos']
+            frame_diff_forward = predict_frame - self.current_frame
+            frame_diff_back = self.current_frame - frame_list[-2]
+            vel_x = (current_pos[0] - prev_x)/frame_diff_back
+            vel_y = (current_pos[1] - prev_y)/frame_diff_back
+            predicted_x = current_pos[0] + vel_x*frame_diff_forward
+            predicted_y = current_pos[1] + vel_y*frame_diff_forward
+            predicted_pos = (predicted_x, predicted_y)
+        
+        #predict the brightness at (input) frame based on the three previous brightnesses
+        brightness_rates = [20000, 10000, 2000, -2000] #pixel counts per frame
+        for i in range(200):
+            brightness_rates.append(-1000)
+        current_brightness = self.history[self.current_frame]['brightness']
+        avg_prev_brightness = current_brightness
+        avg_frame_diff = 1
+        avg_brightness_rate = 0
+        if len(frame_list) < 5:
+            avg_prev_brightness = current_brightness
+            avg_frame_diff = predict_frame - self.current_frame
+            initial_frame = frame_list[0]
+            frame_index = self.current_frame - initial_frame
+            avg_brightness_rate = brightness_rates[frame_index]
+        else:
+            avg_prev_brightness = (self.history[frame_list[-1]]['brightness'] + self.history[frame_list[-2]]['brightness'] + self.history[frame_list[-3]]['brightness'])/3
+            avg_frame_diff = predict_frame - sum(frame_list[-3:])/3
+            initial_frame = frame_list[0]
+            frame_indexes = (np.array(frame_list) - initial_frame*np.ones(len(frame_list))).astype(int)
+            avg_brightness_rate = (brightness_rates[frame_indexes[-3]] + brightness_rates[frame_indexes[-2]] + brightness_rates[frame_indexes[-1]])/3
+        predicted_brightness = avg_prev_brightness + avg_brightness_rate*avg_frame_diff
+
+        predicted_size = self.history[self.current_frame]['size']
+
+        return predicted_pos, predicted_brightness, predicted_size
+    
+
+def track_particles(tiff_folder_path, threshold, max_distance, max_missed, verbose=True, stop=False, stop_frame=2000, brightness_coeff=0.001, length_coeff=2):
+
     tiff_files = sorted(glob.glob(os.path.join(tiff_folder_path, "*.tif")))
     if not tiff_files:
-        print("Error: No TIFF files found in the specified folder.")
+        print("Error: No TIFF files found")
         return
 
-    # Dictionary to store particle burn durations, start/end coordinates, start/end frames, brightnesses and sizes
-    particle_coordinates = {}
-    particle_brightness = {}
-    next_particle_id = 0
+    current_particles = []
+    old_particles = []
     frame_counter = 0
+    start_time = time.time()
 
-
-    for tiff_file in tiff_files:
-
+    for path in tiff_files:
+        if verbose and frame_counter % 500 == 0:
+            elapsed_time = time.time() - start_time
+            print(f"Tracking particles in frame {frame_counter}/{len(tiff_files)}: {path}\nElapsed time: {int((elapsed_time - elapsed_time%60)/60)}mins {elapsed_time%60:.1f}s\n")
         if stop and frame_counter > stop_frame:
             break
-        if verbose and frame_counter % 1000 == 0:
-            print(f"Processing frame {frame_counter}/{len(tiff_files)}: {tiff_file}")
-
-        # Read the TIFF image as grayscale
-        frame = cv2.imread(tiff_file, cv2.IMREAD_ANYDEPTH)
-        
+        # read 16-bit original
+        frame = cv2.imread(path, cv2.IMREAD_UNCHANGED)
         if frame is None:
-            print(f"Error: Could not read file {tiff_file}")
+            frame_counter += 1
             continue
-        
-        # Threshold to isolate white dots
-        _, thresh = cv2.threshold(frame, threshold, 65535, cv2.THRESH_BINARY)
-        thresh8 = thresh.astype(np.uint8)
+        # ensure single-channel
+        if frame.ndim == 3:
+            frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        else:
+            frame_gray = frame.copy()
 
-        # Find contours of the white dots
+        # threshold (threshold provided in same units as input)
+        _, thresh = cv2.threshold(frame_gray, threshold, 65535, cv2.THRESH_BINARY)
+        # convert to uint8 binary image for contours
+        thresh8 = (thresh > 0).astype(np.uint8) * 255
+
         contours, _ = cv2.findContours(thresh8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-        # Get centroids of detected particles
-        current_centroids = []
-        for contour in contours:
-            x, y, w, h = cv2.boundingRect(contour)
-            # if w > 1 or h > 1:  # Filter out small contours
-            cx, cy = x + w // 2, y + h // 2
-            current_centroids.append((cx, cy, w, h))
-
-        # Match current centroids to previous particles
-        unmatched_centroids = set(range(len(current_centroids))) #make list of unmatched centroids
-
-        #loop through previous particles to find matches with current centroids
-        for particle_id in range(next_particle_id):
-            #exit this loop iteration if the particle is too old
-            if frame_counter - max(particle_coordinates[particle_id].keys()) > search_previous_frames:
-                continue
-            (px, py) = particle_coordinates[particle_id][max(particle_coordinates[particle_id].keys())]
-            predicted_x, predicted_y = (px, py)
-            if len(list(particle_coordinates[particle_id].keys())) >= 2:
-                (ppx, ppy) = particle_coordinates[particle_id][sorted(particle_coordinates[particle_id].keys())[-2]]
-                #simple linear motion prediction
-                predicted_x, predicted_y = (px + (px - ppx), py + (py - ppy))
-            
-            best_match = None
-            best_distance = max_distance*(frame_counter - max(particle_coordinates[particle_id].keys()))  # Initialize with a large distance based on the frame difference
-            
-            for i, (cx, cy, w, h) in enumerate(current_centroids):
-                distance = np.sqrt((cx - predicted_x) ** 2 + (cy - predicted_y) ** 2) #calculate distance
-                #Find closest particle to previous particle
-                if distance < best_distance and i in unmatched_centroids:
-                    best_match = i
-                    best_distance = distance
-
-            # If a match is found, update the particle position, end coordinates, end frame and lifetime
-            if best_match is not None:
-                #uncomment for more verbose output
-                #print("new centroid matched to a particle", frame_counter - particle_end_frames[particle_id], "frames prior to current frame")
-                (cx, cy, w, h) = current_centroids[best_match]
-                coords = (cx, cy)
-                particle_coordinates[particle_id][frame_counter] = coords
-                particle_brightness[particle_id][frame_counter] = np.array(frame[cy-2:cy+2, cx-2:cx+2]).mean()
-                unmatched_centroids.discard(best_match)
-
-        # Assign new IDs to unmatched centroids
-        # Must have at least one pixel within 3 pixels of the center greater than the threshold for the new centroid to count as a new particle
-        for i in unmatched_centroids:
-            (cx, cy, w, h) = current_centroids[i]
-            coords = (cx, cy)
-            #uncomment for more verbose output
-            #print(f"New particle detected at frame {frame_counter}: {coords}; id: {next_particle_id}")
-            particle_coordinates[next_particle_id] = {}
-            particle_coordinates[next_particle_id][frame_counter] = coords
-
-            particle_brightness[next_particle_id] = {}
-            if brightness_mode == 'max':
-                particle_brightness[next_particle_id][frame_counter] = np.array(frame[cy-2:cy+2, cx-2:cx+2]).max()
+        detections = []
+        predictions = []
+        for cnt in contours:
+            area = cv2.contourArea(cnt)
+            M = cv2.moments(cnt)
+            if M["m00"] == 0:
+                area = 0.5*cv2.arcLength(cnt, True)
+                if area == 0:
+                    area = 1
+                x, y, w, h = cv2.boundingRect(cnt)
+                cx = x + w/2
+                cy = y + h/2
             else:
-                particle_brightness[next_particle_id][frame_counter] = np.array(frame[cy-2:cy+2, cx-2:cx+2]).mean()
+                cx = M["m10"] / M["m00"]
+                cy = M["m01"] / M["m00"]
+            # brightness measured from original 16-bit frame, within bounding box mask
+            x, y, w, h = cv2.boundingRect(cnt)
+            x0, x1 = max(0, x), min(frame_gray.shape[1], x + w)
+            y0, y1 = max(0, y), min(frame_gray.shape[0], y + h)
+            mask = np.zeros((y1 - y0, x1 - x0), dtype=np.uint8)
+            cnt_shift = cnt.copy()
+            cnt_shift[:, 0, 0] -= x0
+            cnt_shift[:, 0, 1] -= y0
+            cv2.drawContours(mask, [cnt_shift], -1, 1, -1)
+            roi = frame_gray[y0:y1, x0:x1]
+            if roi.size == 0:
+                continue
+            mean_brightness = float(np.sum(roi * mask) / (mask.sum() + 1e-9))
+            detections.append({'pos': (cx, cy), 'brightness': mean_brightness, 'size': area})
+        
+        for particle in current_particles:
+            predicted_pos, predicted_brightness, predicted_size = particle.predict(frame_counter)
+            predictions.append({'pos': predicted_pos, 'brightness': predicted_brightness, 'size': predicted_size})
+        
+        # create cost matrix
+        cost_matrix = np.zeros((len(predictions), len(detections)), dtype=np.float32)
+        for i, pred in enumerate(predictions):
+            for j, det in enumerate(detections):
+                dist = np.linalg.norm(np.array(pred['pos']) - np.array(det['pos']))
+                brightness_diff = abs(pred['brightness'] - det['brightness'])
+                length_diff = abs(np.sqrt(pred['size']) - np.sqrt(det['size']))
+                cost_matrix[i, j] = dist + brightness_coeff*brightness_diff + length_coeff*length_diff
 
-            next_particle_id += 1
+        # solve assignment problem
+        row_ind, col_ind = linear_sum_assignment(cost_matrix)
+        for r, c in zip(row_ind, col_ind):
+            if cost_matrix[r, c] <= max_distance:
+                current_particle = current_particles[r]
+                det = detections[c]
+                current_particle.update(frame_counter, det['pos'], det['brightness'], det['size'])
+            else:
+                current_particles[r].missed_frames += 1
+                new_det = detections[c]
+                new_particle = Particle(frame_counter, new_det['pos'], new_det['brightness'], new_det['size'])
+                current_particles.append(new_particle)
+        unmatched_predictions = set(range(len(predictions))) - set(row_ind)
+        unmatched_detections = set(range(len(detections))) - set(col_ind)
+
+        # handle unmatched predictions and detections
+        for r in unmatched_predictions:
+            current_particles[r].missed_frames += 1
+        for c in unmatched_detections:
+            new_det = detections[c]
+            new_particle = Particle(frame_counter, new_det['pos'], new_det['brightness'], new_det['size'])
+            current_particles.append(new_particle)
+        
+        # Remove particles that have missed too many frames
+        for particle in current_particles:
+            if particle.missed_frames >= max_missed:
+                old_particles.append(particle)
+        current_particles = [p for p in current_particles if p.missed_frames < max_missed]
         frame_counter += 1
 
-    cv2.destroyAllWindows()
-    
-    # Check if output file exists, and add a number in parentheses if it does
-    test_num = tiff_folder_path.split(os.sep)[-1]
+    # Prepare CSV output path
+    test_num = os.path.basename(os.path.normpath(tiff_folder_path))
     base_csv = os.path.join(tiff_folder_path, "..", test_num + "_particle_tracking_results.csv")
     output_csv = base_csv
     count = 1
@@ -113,37 +189,34 @@ def track_particle_burns(tiff_folder_path, threshold, frame_rate, max_distance=3
         output_csv = os.path.splitext(base_csv)[0] + f"({count})" + ".csv"
         count += 1
 
-    # Write results to CSV
-    with open(output_csv, mode='w', newline='') as file:
-        writer = csv.writer(file)
-        writer.writerow([f'threshold={threshold}, frame_rate={frame_rate}, max_distance={max_distance}, search_previous_frames={search_previous_frames}'])
-        for particle_id in particle_coordinates.keys():
+    # Write CSV in same structure as original script
+    with open(output_csv, mode='w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow([f'threshold={threshold}, max_distance={max_distance}, max_missed={max_missed}, brightness_coeff={brightness_coeff}, length_coeff={length_coeff}'])
+        for id, particle in enumerate(old_particles):
+            frames = sorted(particle.history.keys())
+            writer.writerow([f'Particle {id}'])
+            row = ['frame'] + frames
+            writer.writerow(row)
+            xrow = ['particle x coordinate'] + [particle.history[f]['pos'][0] for f in frames]
+            yrow = ['particle y coordinate'] + [particle.history[f]['pos'][1] for f in frames]
+            brow = ['particle brightness'] + [particle.history[f]['brightness'] for f in frames]
+            srow = ['particle size'] + [particle.history[f]['size'] for f in frames]
+            writer.writerow(xrow)
+            writer.writerow(yrow)
+            writer.writerow(brow)
+            writer.writerow(srow)
 
-            frame_range = np.array(list(particle_coordinates[particle_id].keys()))
-            writer.writerow([f'Particle {particle_id}'])
-            frame_write = list(['frame'])
-            for i in range(len(frame_range)):
-                frame_write.append(frame_range[i])
-            writer.writerow(frame_write)
-
-            xcoord_write = list(['particle x coordinate'])
-            ycoord_write = list(['particle y coordinate'])
-            for f in frame_range:
-                try:
-                    xcoord_write.append(particle_coordinates[particle_id][f][0])
-                    ycoord_write.append(particle_coordinates[particle_id][f][1])
-                except KeyError:
-                    xcoord_write.append('')
-                    ycoord_write.append('')
-            writer.writerow(xcoord_write)
-            writer.writerow(ycoord_write)
-
-            brightness_write = list(['particle brightness'])
-            for f in frame_range:
-                try:
-                    brightness_write.append(particle_brightness[particle_id][f])
-                except KeyError:
-                    brightness_write.append('')
-            writer.writerow(brightness_write)
     print(f"Results written to {output_csv}")
     return
+
+if __name__ == '__main__':
+    tiff_folder_path = r"F:\20251015\test3\test3_calibrated"
+    thresh = 1000
+    max_dist = 50
+    max_missed = 2
+    start_time = time.time()
+    track_particles(tiff_folder_path, thresh, max_dist, max_missed, stop=True, stop_frame=20000, brightness_coeff=0.0006, length_coeff=1.5)
+    end_time = time.time()
+    elapsed_time = end_time - start_time
+    print(f'Total elapsed time: {int((elapsed_time - elapsed_time%60)/60)}mins {elapsed_time%60:.1f}s')

@@ -58,7 +58,7 @@ def laser_location(x, laser_location_files):
     
     
 #main analysis function. Makes a ton of graphs
-def analyze_particles(file_path, fps, min_brightness, test_name, laser_location_files, plots=True):
+def analyze_particles(file_path, fps, min_brightness, test_name, laser_location_files=None, plots=True):
 
     plt.rcParams['figure.max_open_warning'] = 0
 
@@ -92,11 +92,11 @@ def analyze_particles(file_path, fps, min_brightness, test_name, laser_location_
                 data_dict[id]['brightnesses'].append(None)
             else:
                 try:
-                    data_dict[id]['xcoords'].append(int(xcoords[j]))
-                    data_dict[id]['ycoords'].append(int(ycoords[j]))
+                    data_dict[id]['xcoords'].append(int(float(xcoords[j])))
+                    data_dict[id]['ycoords'].append(int(float(ycoords[j])))
                     data_dict[id]['brightnesses'].append(int(float(brightnesses[j])))
                     if j>1:
-                        dist_pixels = np.sqrt((int(xcoords[j])-int(xcoords[j-1]))**2 + (int(ycoords[j])-int(ycoords[j-1]))**2)
+                        dist_pixels = np.sqrt(int((float(xcoords[j])-float(xcoords[j-1]))**2) + int((float(ycoords[j])-float(ycoords[j-1]))**2))
                         dist_mm = dist_pixels*0.0133 #distance in mm
                         speed = dist_mm*fps/1000 #speed in m/s
                         data_dict[id]['speeds'].append(speed)
@@ -104,8 +104,7 @@ def analyze_particles(file_path, fps, min_brightness, test_name, laser_location_
                     data_dict[id]['xcoords'].append(None)
                     data_dict[id]['ycoords'].append(None)
                     data_dict[id]['brightnesses'].append(None)
-        i += 5
-
+        i += 6
     #trim 1-frame particles and out of frame particles
     ids = list(data_dict.keys())
     for id in ids:
@@ -143,16 +142,16 @@ def analyze_particles(file_path, fps, min_brightness, test_name, laser_location_
             data_dict.pop(id)
 
     #trim particles that reach their brightest point inside the laser
-    ids = list(data_dict.keys())
-    for id in ids:
-        brightnesses = data_dict[id]['brightnesses']
-        max_brightness = max([b for b in brightnesses if b is not None])
-        max_index = brightnesses.index(max_brightness)
-        brightesty = data_dict[id]['ycoords'][max_index]
-        brightestx = data_dict[id]['xcoords'][max_index]
-        y_upper, y_lower = laser_location(brightestx, laser_location_files)
-        if brightesty < y_lower+3 and brightesty > y_upper-3:
-            data_dict.pop(id)
+    # ids = list(data_dict.keys())
+    # for id in ids:
+    #     brightnesses = data_dict[id]['brightnesses']
+    #     max_brightness = max([b for b in brightnesses if b is not None])
+    #     max_index = brightnesses.index(max_brightness)
+    #     brightesty = data_dict[id]['ycoords'][max_index]
+    #     brightestx = data_dict[id]['xcoords'][max_index]
+    #     y_upper, y_lower = laser_location(brightestx, laser_location_files)
+    #     if brightesty < y_lower+5 and brightesty > y_upper-5:
+    #         data_dict.pop(id)
 
     #trim particles that start at a brightness greater than 10000 OR decrease after the first frame OR have a minimum brightness greater than 10000 OR end brighter than 5000
     ids = list(data_dict.keys())
@@ -161,35 +160,53 @@ def analyze_particles(file_path, fps, min_brightness, test_name, laser_location_
             data_dict.pop(id)
             continue
         min_brightness = min(data_dict[id]['brightnesses'])
-        if min_brightness > 10000:
+        if min_brightness > 5000:
             data_dict.pop(id)
             continue
-        if data_dict[id]['brightnesses'][-1] > 5000:
-            data_dict.pop(id)
-            continue
+    #     if data_dict[id]['brightnesses'][-1] > 5000:
+    #         data_dict.pop(id)
+    #         continue
 
-    #trim particles that peak after frame 10 OR have a second brightness peak after frame 15
+    # trim particles that peak after frame 10 OR have a second brightness peak after frame 10
     ids = list(data_dict.keys())
     for id in ids:
         brightnesses = data_dict[id]['brightnesses']
-        max_brightness = max([b for b in brightnesses if b is not None])
-        max_index = brightnesses.index(max_brightness)
-        if max_index > 10:
-            data_dict.pop(id)
-            continue
-        i = 10
+        # max_brightness = max([b for b in brightnesses if b is not None])
+        # max_index = brightnesses.index(max_brightness)
+        # if max_index > 10:
+        #     data_dict.pop(id)
+        #     continue
+        i = 7
         #detect second peak if brightness increases for two consecutive frames after frame 10 with a total increase of more than 15000
         while i < len(brightnesses)-2:
-            if brightnesses[i+1] > brightnesses[i] and brightnesses[i+2] > brightnesses[i+1] and brightnesses[i+1] - brightnesses[i] + brightnesses[i+2] - brightnesses[i+1] > 15000:
+            if brightnesses[i+1] > brightnesses[i] and brightnesses[i+2] > brightnesses[i+1] and brightnesses[i+1] - brightnesses[i] + brightnesses[i+2] - brightnesses[i+1] > 7000:
+                data_dict.pop(id)
+                break
+            if brightnesses[i+1] - brightnesses[i] > 5000:
                 data_dict.pop(id)
                 break
             i += 1
 
+    #trim particles burning for less than 10 frames
+    ids = list(data_dict.keys())
+    for id in ids:
+        if len(data_dict[id]['frames']) < 10:
+            data_dict.pop(id)
+
     #trim particles outside an initial speed range
     ids = list(data_dict.keys())
     for id in ids:
-        initial_speed = (data_dict[id]['speeds'][0] + data_dict[id]['speeds'][1] + data_dict[id]['speeds'][0])/3
-        if initial_speed < 0.75 or initial_speed > 1.75:
+        initial_speed = (data_dict[id]['speeds'][0] + data_dict[id]['speeds'][1] + data_dict[id]['speeds'][2])/3
+        if initial_speed < 0.75 or initial_speed > 2:
+            data_dict.pop(id)
+            continue
+
+    #trim particles that move more in x than y at beginning
+    ids = list(data_dict.keys())
+    for id in ids:
+        delta_x = abs(data_dict[id]['xcoords'][2] - data_dict[id]['xcoords'][0])
+        delta_y = abs(data_dict[id]['ycoords'][2] - data_dict[id]['ycoords'][0])
+        if delta_x > delta_y:
             data_dict.pop(id)
             continue
 
@@ -201,8 +218,13 @@ def analyze_particles(file_path, fps, min_brightness, test_name, laser_location_
         brightnesses = data_dict[id]['brightnesses']
         max_brightness = max([b for b in brightnesses if b is not None])
         burn_times[id] = (data_dict[id]['frames'][-1] - data_dict[id]['frames'][0])/fps*1000
-        ignition_times[id] = (data_dict[id]['frames'][brightnesses.index(max_brightness)] - data_dict[id]['frames'][0])/fps*1000000
-        initial_speeds[id] = (data_dict[id]['speeds'][0] + data_dict[id]['speeds'][1] + data_dict[id]['speeds'][0])/3
+        frame80 = 0
+        for i in range(len(data_dict[id]['frames'])):
+            if brightnesses[i] > 0.8*max_brightness:
+                frame80 = i-1 + 0.8*max_brightness/(brightnesses[i]-brightnesses[i-1])
+                break
+        ignition_times[id] = (frame80)/fps*1000000
+        initial_speeds[id] = data_dict[id]['speeds'][0]
 
     if plots:
 
@@ -233,7 +255,7 @@ def analyze_particles(file_path, fps, min_brightness, test_name, laser_location_
         fig.canvas.manager.set_window_title('Ignition Times, ' + test_name)
 
         rs = []
-        num_random = 10
+        num_random = 8
         for i in range(num_random):
             rs.append(random.random())
         #plot random sample of brightness vs frame number and particle tracks
@@ -242,8 +264,11 @@ def analyze_particles(file_path, fps, min_brightness, test_name, laser_location_
             r = rs[i]
             id = list(data_dict.keys())[int(r*len(data_dict.keys()))]
             plt.plot(range(len(data_dict[id]['frames'])), data_dict[id]['brightnesses'])
-        plt.title('random sample of brightness vs frame number, ' + test_name)
+        plt.title('Particle brightness vs frame number for two random particles, ' + test_name)
         plt.legend([list(data_dict.keys())[int(rs[i]*len(data_dict.keys()))] for i in range(num_random)])
+        # plt.legend(['Particle 1', 'Particle 2'])
+        plt.xlabel('Frame number')
+        plt.ylabel('Brightness (pixel counts)')
         fig.canvas.manager.set_window_title('Random Sample of Brightness vs. Frame Number, ' + test_name)
 
         #plot speed vs frame number for random sample
@@ -281,15 +306,15 @@ def analyze_particles(file_path, fps, min_brightness, test_name, laser_location_
             id = list(data_dict.keys())[int(r*len(data_dict.keys()))]
             plt.plot(data_dict[id]['xcoords'], data_dict[id]['ycoords'], '.-')
         plt.title('random sample of particle tracks, ' + test_name)
-        laserxs = np.linspace(0, 1280, 300)
-        laserys_upper = []
-        laserys_lower = []
-        for x in laserxs:
-            y_upper, y_lower = laser_location(x, laser_location_files)
-            laserys_upper.append(y_upper)
-            laserys_lower.append(y_lower)
-        plt.plot(laserxs, laserys_upper, color='red', linestyle='-', label='Laser Upper Bound')
-        plt.plot(laserxs, laserys_lower, color='red', linestyle='-', label='Laser Upper Bound')
+        # laserxs = np.linspace(0, 1280, 300)
+        # laserys_upper = []
+        # laserys_lower = []
+        # for x in laserxs:
+        #     y_upper, y_lower = laser_location(x, laser_location_files)
+        #     laserys_upper.append(y_upper)
+        #     laserys_lower.append(y_lower)
+        # plt.plot(laserxs, laserys_upper, color='red', linestyle='-', label='Laser Upper Bound')
+        # plt.plot(laserxs, laserys_lower, color='red', linestyle='-', label='Laser Upper Bound')
         fig.canvas.manager.set_window_title('Random Sample of Particle Tracks, ' + test_name)
 
         #plot all particle tracks
@@ -309,7 +334,7 @@ def analyze_particles(file_path, fps, min_brightness, test_name, laser_location_
 if __name__ == "__main__":
     #input parameters
     fps = 25000
-    min_brightnesses = [12000, 12000, 12000, 12000, 12000, 12000, 12000, 12000, 12000, 12000, 12000]
+    min_brightness = 12500
     file_names = [r"C:\Users\Griffin\Documents\Research\results\20251015\test1_calibrated_particle_tracking_results.csv",
                   r"C:\Users\Griffin\Documents\Research\results\20251015\test2_calibrated_particle_tracking_results.csv",
                   r"C:\Users\Griffin\Documents\Research\results\20251015\test3_calibrated_particle_tracking_results.csv",
@@ -320,8 +345,7 @@ if __name__ == "__main__":
                   r"C:\Users\Griffin\Documents\Research\results\20251015\test8_calibrated_particle_tracking_results.csv",
                   r"C:\Users\Griffin\Documents\Research\results\20251015\test9_calibrated_particle_tracking_results.csv",
                   r"C:\Users\Griffin\Documents\Research\results\20251015\test10_calibrated_particle_tracking_results.csv",
-                  r"C:\Users\Griffin\Documents\Research\results\20251015\test11_calibrated_particle_tracking_results.csv",
-                  ]
+                  r"C:\Users\Griffin\Documents\Research\results\20251015\test11_calibrated_particle_tracking_results.csv"]
     test_names = ['Al', 'AlGa5', 'AlGa10', 'AlIn', 'H-5', 'H-3', 'Al2O3', 'AlLi3', 'AlLi5', 'AlLi10', 'AlLi20']
     
     #Read laser location data
@@ -334,18 +358,19 @@ if __name__ == "__main__":
     speed_lists = []
 
     #analyze each file
-    files_to_analyze = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
-    laser_locations = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+    files_to_analyze = [0, 1, 2, 3, 4, 6, 7, 8, 9, 10]
+    laser_locations = [1]
     for i in range(len(file_names)):
-        if i not in files_to_analyze:
+        if i in files_to_analyze:
+            file_name = file_names[i]
+            testi_burn_times, testi_ignition_times, speeds = analyze_particles(file_name, fps, min_brightness, test_names[i], plots=True)
+            burn_times.append(testi_burn_times)
+            ignition_times.append(testi_ignition_times)
+            speed_lists.append(speeds)
+        else:
             burn_times.append([])
             ignition_times.append([])
             speed_lists.append([])
-            continue
-        testi_burn_times, testi_ignition_times, speeds = analyze_particles(file_names[files_to_analyze[i]], fps, min_brightnesses[files_to_analyze[i]], test_names[files_to_analyze[i]], laser_location_files_array[laser_locations[i]], plots=True)
-        burn_times.append(testi_burn_times)
-        ignition_times.append(testi_ignition_times)
-        speed_lists.append(speeds)
 
     #uncomment to add burn/ignition times for first quarter and last quarter of a test
     # burn_times.append([bt for j, bt in enumerate(burn_times[0]) if j < len(burn_times[0])/4])
@@ -361,7 +386,7 @@ if __name__ == "__main__":
 
     # uncomment to perform a statistical t-tests
     
-    tests_to_compare = [(0, 7), (0, 8), (0, 9), (0, 10)]
+    tests_to_compare = [(0,1), (0,2), (0,3), (1,2), (1,3), (2,3), (0,7), (0,8), (0,9), (0,10), (7,8), (7,9), (7,10), (8,9), (8,10), (9,10)]
 
     for test_pair in tests_to_compare:
         test1 = test_pair[0]

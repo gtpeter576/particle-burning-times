@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 import csv
 from scipy.optimize import linear_sum_assignment
 import time
+import image_calibration as ic
 
 class Particle:
     def __init__(self, frame, pos, brightness, size):
@@ -25,7 +26,7 @@ class Particle:
         self.history[frame]['size'] = size
         self.missed_frames = 0
     
-    def predict(self, predict_frame):
+    def predict(self, predict_frame, fps):
         
         frame_list = sorted(list(self.history.keys()))
 
@@ -45,9 +46,15 @@ class Particle:
             predicted_pos = (predicted_x, predicted_y)
         
         #predict the brightness at (input) frame based on the three previous brightnesses
-        brightness_rates = [20000, 10000, 2000, -2000] #pixel counts per frame
-        for i in range(200):
-            brightness_rates.append(-1000)
+        brightness_rates_25k = [20000, 10000, 2000, -2000, -1000, -1000] #pixel counts per frame at 25000 fps, MUST CONVERT TO PROPER FPS
+        brightness_rates = []
+        for i in range(frame_list[-1] - frame_list[0] + 1):
+            frame_index_25k = i*25000/fps
+            if frame_index_25k <= 4:
+                interpolated_rate_25k = brightness_rates_25k[int(frame_index_25k)] + (frame_index_25k - int(frame_index_25k))*(brightness_rates_25k[int(frame_index_25k)+1] - brightness_rates_25k[int(frame_index_25k)])
+                brightness_rates.append(interpolated_rate_25k*25000/fps)
+            else:
+                brightness_rates.append(-1000*25000/fps)
         current_brightness = self.history[self.current_frame]['brightness']
         avg_prev_brightness = current_brightness
         avg_frame_diff = 1
@@ -63,6 +70,8 @@ class Particle:
             avg_frame_diff = predict_frame - sum(frame_list[-3:])/3
             initial_frame = frame_list[0]
             frame_indexes = (np.array(frame_list) - initial_frame*np.ones(len(frame_list))).astype(int)
+            # print(len(brightness_rates))
+            # print(frame_indexes[-1], '\n')
             avg_brightness_rate = (brightness_rates[frame_indexes[-3]] + brightness_rates[frame_indexes[-2]] + brightness_rates[frame_indexes[-1]])/3
         predicted_brightness = avg_prev_brightness + avg_brightness_rate*avg_frame_diff
 
@@ -71,7 +80,7 @@ class Particle:
         return predicted_pos, predicted_brightness, predicted_size
     
 
-def track_particles(tiff_folder_path, threshold, max_distance, max_missed, verbose=True, stop=False, stop_frame=2000, brightness_coeff=0.001, length_coeff=2):
+def track_particles(tiff_folder_path, threshold, max_distance, max_missed, fps, verbose=True, stop=False, stop_frame=2000, brightness_coeff=0.001, length_coeff=2):
 
     tiff_files = sorted(glob.glob(os.path.join(tiff_folder_path, "*.tif")))
     if not tiff_files:
@@ -84,7 +93,7 @@ def track_particles(tiff_folder_path, threshold, max_distance, max_missed, verbo
     start_time = time.time()
 
     for path in tiff_files:
-        if verbose and frame_counter % 500 == 0:
+        if verbose and frame_counter % 1000 == 0:
             elapsed_time = time.time() - start_time
             print(f"Tracking particles in frame {frame_counter}/{len(tiff_files)}: {path}\nElapsed time: {int((elapsed_time - elapsed_time%60)/60)}mins {elapsed_time%60:.1f}s\n")
         if stop and frame_counter > stop_frame:
@@ -138,7 +147,7 @@ def track_particles(tiff_folder_path, threshold, max_distance, max_missed, verbo
             detections.append({'pos': (cx, cy), 'brightness': mean_brightness, 'size': area})
         
         for particle in current_particles:
-            predicted_pos, predicted_brightness, predicted_size = particle.predict(frame_counter)
+            predicted_pos, predicted_brightness, predicted_size = particle.predict(frame_counter, fps)
             predictions.append({'pos': predicted_pos, 'brightness': predicted_brightness, 'size': predicted_size})
         
         # create cost matrix
@@ -211,12 +220,16 @@ def track_particles(tiff_folder_path, threshold, max_distance, max_missed, verbo
     return
 
 if __name__ == '__main__':
-    tiff_folder_path = r"F:\20251015\test3\test3_calibrated"
+
+    #ic.image_calibration(r"D:\20251110\test18\test18", r"D:\20251110\test18\AVG_bg.tif", r"D:\20251110\test18\test18_calibrated")
+
+    tiff_folder_path = r"D:\20251110\test18\CODE_TESTING_CALIBRATED"
     thresh = 1000
     max_dist = 50
     max_missed = 2
+    fps = 25000
     start_time = time.time()
-    track_particles(tiff_folder_path, thresh, max_dist, max_missed, stop=True, stop_frame=20000, brightness_coeff=0.0006, length_coeff=1.5)
+    track_particles(tiff_folder_path, thresh, max_dist, max_missed, fps, stop=False, stop_frame=2000, brightness_coeff=0.0006, length_coeff=1.5)
     end_time = time.time()
     elapsed_time = end_time - start_time
     print(f'Total elapsed time: {int((elapsed_time - elapsed_time%60)/60)}mins {elapsed_time%60:.1f}s')

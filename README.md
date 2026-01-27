@@ -6,4 +6,4 @@ image_calibration.py subtracts the background given an origin folder, calibratio
 
 particle_tracking.py tracks the particles in the calibrated frames, outputting a nested dictionary containing particle location and brightness for the frames that it exists
 
-these initial burn times are skewed due to particle_tracking detecting erroneous particles. Further processing can be done with particle_driver.ipynb to find accurate burn times.
+these initial particle tracks include erroneous tracks. Further processing is done with tracked_particle_analyzer.py to remove erroneous tracks, and to classify particles into ignition modes to suit the experimental setup.

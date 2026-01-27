@@ -6,59 +6,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 import random
 from scipy import stats
-
-#given measured coordinates of the laser beam, interpolate to find y location of laser at any x position
-def laser_location(x, laser_location_files):
-
-    y_upper_calcs = []
-    y_lower_calcs = []
-
-    for laser_location_file in laser_location_files:
-        with open(laser_location_file) as f:
-            data = f.readlines()
-        laserxs = []
-        lasery_lower = []
-        lasery_upper = []
-        
-        for line in data[1:]:
-            vals = line.split(",")
-            laserxs.append(float(vals[0]))
-            lasery_upper.append(float(vals[4]))
-            lasery_lower.append(float(vals[5]))
-
-        i = 0
-        while i < len(laserxs) and x > laserxs[i]:
-            i += 1
-
-        if i == 0:
-            slope_upper = (lasery_upper[i+1] - lasery_upper[i]) / (laserxs[i+1] - laserxs[i])
-            slope_lower = (lasery_lower[i+1] - lasery_lower[i]) / (laserxs[i+1] - laserxs[i])
-            y_upper = slope_upper*(x - laserxs[i]) + lasery_upper[i]
-            y_lower = slope_lower*(x - laserxs[i]) + lasery_lower[i]
-            
-        elif i == len(laserxs):
-            slope_upper = (lasery_upper[i-1] - lasery_upper[i-2]) / (laserxs[i-1] - laserxs[i-2])
-            slope_lower = (lasery_lower[i-1] - lasery_lower[i-2]) / (laserxs[i-1] - laserxs[i-2])
-            y_upper = slope_upper*(x - laserxs[i-1]) + lasery_upper[i-1]
-            y_lower = slope_lower*(x - laserxs[i-1]) + lasery_lower[i-1]
-        else:
-            laserx_before = laserxs[i-1]
-            laserx_after = laserxs[i]
-            slope_upper = (lasery_upper[i] - lasery_upper[i-1]) / (laserx_after - laserx_before)
-            y_upper = slope_upper*(x - laserx_before) + lasery_upper[i-1]
-
-            slope_lower = (lasery_lower[i] - lasery_lower[i-1]) / (laserx_after - laserx_before)
-            y_lower = slope_lower*(x - laserx_before) + lasery_lower[i-1]
-        y_upper_calcs.append(y_upper)
-        y_lower_calcs.append(y_lower)
-
-    y_upper = np.mean(y_upper_calcs)
-    y_lower = np.mean(y_lower_calcs)
-    return y_upper, y_lower
-    
+from scipy.stats import norm
     
 #main analysis function. Makes a ton of graphs
-def analyze_particles(file_path, fps, min_brightness, test_name, laser_location_files=None, plots=True):
+def analyze_particles(file_path, fps, trim_brightness, test_name, plots=True):
 
     plt.rcParams['figure.max_open_warning'] = 0
 
@@ -78,25 +29,30 @@ def analyze_particles(file_path, fps, min_brightness, test_name, laser_location_
         xcoords = lines[i+2]
         ycoords = lines[i+3]
         brightnesses = lines[i+4]
+        sizes = lines[i+5]
         data_dict[id] = {}
         data_dict[id]['frames'] = []
         data_dict[id]['xcoords'] = []
         data_dict[id]['ycoords'] = []
         data_dict[id]['brightnesses'] = []
         data_dict[id]['speeds'] = []
+        data_dict[id]['sizes'] = []
         for j in range(1, len(frames)):
             data_dict[id]['frames'].append(int(frames[j]))
             if xcoords[j] == '':
                 data_dict[id]['xcoords'].append(None)
                 data_dict[id]['ycoords'].append(None)
                 data_dict[id]['brightnesses'].append(None)
+                data_dict[id]['speeds'].append(None)
+                data_dict[id]['sizes'].append(None)
             else:
                 try:
-                    data_dict[id]['xcoords'].append(int(float(xcoords[j])))
-                    data_dict[id]['ycoords'].append(int(float(ycoords[j])))
-                    data_dict[id]['brightnesses'].append(int(float(brightnesses[j])))
+                    data_dict[id]['xcoords'].append(float(xcoords[j]))
+                    data_dict[id]['ycoords'].append(float(ycoords[j]))
+                    data_dict[id]['brightnesses'].append(float(brightnesses[j]))
+                    data_dict[id]['sizes'].append(float(sizes[j]))
                     if j>1:
-                        dist_pixels = np.sqrt(int((float(xcoords[j])-float(xcoords[j-1]))**2) + int((float(ycoords[j])-float(ycoords[j-1]))**2))
+                        dist_pixels = np.sqrt((float(xcoords[j])-float(xcoords[j-1]))**2 + (float(ycoords[j])-float(ycoords[j-1]))**2)
                         dist_mm = dist_pixels*0.0133 #distance in mm
                         speed = dist_mm*fps/1000 #speed in m/s
                         data_dict[id]['speeds'].append(speed)
@@ -104,6 +60,8 @@ def analyze_particles(file_path, fps, min_brightness, test_name, laser_location_
                     data_dict[id]['xcoords'].append(None)
                     data_dict[id]['ycoords'].append(None)
                     data_dict[id]['brightnesses'].append(None)
+                    data_dict[id]['speeds'].append(None)
+                    data_dict[id]['sizes'].append(None)
         i += 6
     #trim 1-frame particles and out of frame particles
     ids = list(data_dict.keys())
@@ -116,44 +74,43 @@ def analyze_particles(file_path, fps, min_brightness, test_name, laser_location_
             if brightness is None:
                 data_dict.pop(id)
                 break
+    num_before_filtering = len(data_dict.keys())
 
     #plot histogram of maximum brightnesses
     if plots:
         max_brightnesses = {}
+        initial_speeds = []
         for id in data_dict.keys():
             brightnesses = data_dict[id]['brightnesses']
             if all(b is None for b in brightnesses):
                 continue
             max_brightness = max([b for b in brightnesses if b is not None])
             max_brightnesses[id] = max_brightness
+
+            if len(data_dict[id]['speeds']) >= int(10*fps/25000):
+                initial_speeds.append(data_dict[id]['speeds'][0])
         fig = plt.figure()
         hist = plt.hist(max_brightnesses.values(), bins=200, color='blue', alpha=0.7)
         plt.title('maximum brightnesses ' + test_name)
         fig.canvas.manager.set_window_title('Maximum Brightness Distribution, ' + test_name)
 
-    #trim particles that don't reach a certain maximum brightness
+        #plot histogram of initial speeds
+        fig = plt.figure()
+        hist = plt.hist(initial_speeds, bins=400, color='blue', alpha=0.7)
+        plt.title('initial speeds (m/s)')
+        fig.canvas.manager.set_window_title('Initial speed Distribution, ' + test_name)
+
+    #trim particles that don't reach a certain trim brightness
     ids = list(data_dict.keys())
     for id in ids:
         brightnesses = data_dict[id]['brightnesses']
         if all(b is None for b in brightnesses):
             continue
         max_brightness = max([b for b in brightnesses if b is not None])
-        if max_brightness < min_brightness:
+        if max_brightness < trim_brightness:
             data_dict.pop(id)
 
-    #trim particles that reach their brightest point inside the laser
-    # ids = list(data_dict.keys())
-    # for id in ids:
-    #     brightnesses = data_dict[id]['brightnesses']
-    #     max_brightness = max([b for b in brightnesses if b is not None])
-    #     max_index = brightnesses.index(max_brightness)
-    #     brightesty = data_dict[id]['ycoords'][max_index]
-    #     brightestx = data_dict[id]['xcoords'][max_index]
-    #     y_upper, y_lower = laser_location(brightestx, laser_location_files)
-    #     if brightesty < y_lower+5 and brightesty > y_upper-5:
-    #         data_dict.pop(id)
-
-    #trim particles that start at a brightness greater than 10000 OR decrease after the first frame OR have a minimum brightness greater than 10000 OR end brighter than 5000
+    #trim particles that start at a brightness greater than 10000 OR decrease after the first frame OR have a minimum brightness greater than 5000 OR end brighter than 5000
     ids = list(data_dict.keys())
     for id in ids:
         if data_dict[id]['brightnesses'][0] > 10000 or data_dict[id]['brightnesses'][0] > data_dict[id]['brightnesses'][1]:
@@ -163,41 +120,43 @@ def analyze_particles(file_path, fps, min_brightness, test_name, laser_location_
         if min_brightness > 5000:
             data_dict.pop(id)
             continue
-    #     if data_dict[id]['brightnesses'][-1] > 5000:
-    #         data_dict.pop(id)
-    #         continue
+        if data_dict[id]['brightnesses'][-1] > 5000:
+            data_dict.pop(id)
+            continue
 
-    # trim particles that peak after frame 10 OR have a second brightness peak after frame 10
+    # trim particles that have a second brightness peak after frame 10
     ids = list(data_dict.keys())
     for id in ids:
         brightnesses = data_dict[id]['brightnesses']
-        # max_brightness = max([b for b in brightnesses if b is not None])
-        # max_index = brightnesses.index(max_brightness)
-        # if max_index > 10:
-        #     data_dict.pop(id)
-        #     continue
-        i = 7
-        #detect second peak if brightness increases for two consecutive frames after frame 10 with a total increase of more than 15000
-        while i < len(brightnesses)-2:
-            if brightnesses[i+1] > brightnesses[i] and brightnesses[i+2] > brightnesses[i+1] and brightnesses[i+1] - brightnesses[i] + brightnesses[i+2] - brightnesses[i+1] > 7000:
-                data_dict.pop(id)
-                break
-            if brightnesses[i+1] - brightnesses[i] > 5000:
-                data_dict.pop(id)
-                break
+        i = int(3*fps/25000)
+        #detect second peak if brightness increases by more than 8000 for frames 3-6 OR
+        #  increases by more than 4000 after frame 6 OR
+        #  increases for two consecutive frames after frame 6 with a total increase of more than 8000
+        while i + int(2*fps/25000) < len(brightnesses):
+            if i > int(6*fps/25000):
+                if brightnesses[i+int(1*fps/25000)] > brightnesses[i] and brightnesses[i+int(2*fps/25000)] > brightnesses[i+int(1*fps/25000)] and brightnesses[i+int(1*fps/25000)] - brightnesses[i] + brightnesses[i+int(2*fps/25000)] - brightnesses[i+int(1*fps/25000)] > 6000:
+                    data_dict.pop(id)
+                    break
+                if brightnesses[i+int(1*fps/25000)] - brightnesses[i] > 4000:
+                    data_dict.pop(id)
+                    break
+            else:
+                if brightnesses[i+int(1*fps/25000)] - brightnesses[i] > 8000:
+                    data_dict.pop(id)
+                    break
             i += 1
 
-    #trim particles burning for less than 10 frames
+    #trim particles burning for less than 10 frames (0.4 ms)
     ids = list(data_dict.keys())
     for id in ids:
-        if len(data_dict[id]['frames']) < 10:
+        if len(data_dict[id]['frames']) < int(10*fps/25000):
             data_dict.pop(id)
 
     #trim particles outside an initial speed range
     ids = list(data_dict.keys())
     for id in ids:
-        initial_speed = (data_dict[id]['speeds'][0] + data_dict[id]['speeds'][1] + data_dict[id]['speeds'][2])/3
-        if initial_speed < 0.75 or initial_speed > 2:
+        initial_speed = data_dict[id]['speeds'][0]
+        if initial_speed < 0.6:
             data_dict.pop(id)
             continue
 
@@ -217,7 +176,16 @@ def analyze_particles(file_path, fps, min_brightness, test_name, laser_location_
     for id in data_dict.keys():
         brightnesses = data_dict[id]['brightnesses']
         max_brightness = max([b for b in brightnesses if b is not None])
-        burn_times[id] = (data_dict[id]['frames'][-1] - data_dict[id]['frames'][0])/fps*1000
+        ignition_frame = data_dict[id]['frames'][0]
+        while ignition_frame < data_dict[id]['frames'][-1]:
+            if brightnesses[ignition_frame - data_dict[id]['frames'][0]] >= 0.5*max_brightness:
+                break
+            ignition_frame += 1
+        # print(data_dict[id]['frames'][-1] - data_dict[id]['frames'][0])
+        # print(data_dict[id]['frames'][-1] - ignition_frame, '\n')
+        # burn_times[id] = (data_dict[id]['frames'][-1] - data_dict[id]['frames'][0])/fps*1000 # calculate burn time beginning at detection
+        burn_times[id] = (data_dict[id]['frames'][-1] - ignition_frame)/fps*1000 # calculate burn time beginning at ignition
+
         frame80 = 0
         for i in range(len(data_dict[id]['frames'])):
             if brightnesses[i] > 0.8*max_brightness:
@@ -226,6 +194,29 @@ def analyze_particles(file_path, fps, min_brightness, test_name, laser_location_
         ignition_times[id] = (frame80)/fps*1000000
         initial_speeds[id] = data_dict[id]['speeds'][0]
 
+    # trim particles with burn times less than 0.4 ms
+    ids = list(data_dict.keys())
+    for id in ids:
+        if burn_times[id] <= 0.4:
+            data_dict.pop(id)
+            burn_times.pop(id)
+            ignition_times.pop(id)
+            initial_speeds.pop(id)
+
+    # separate particles into mode 1 and mode 2
+    mode1_data_dict = {}
+    mode2_data_dict = {}
+    mode1_burn_times = {}
+    mode2_burn_times = {}
+    for id in data_dict.keys():
+        if data_dict[id]['brightnesses'].index(max(data_dict[id]['brightnesses'])) <= int(6*fps/25000):
+            mode1_data_dict[id] = data_dict[id]
+            mode1_burn_times[id] = burn_times[id]
+        else:
+            mode2_data_dict[id] = data_dict[id]
+            mode2_burn_times[id] = burn_times[id]
+
+    # generate diagnostic plots
     if plots:
 
         #plot histogram of burn times
@@ -241,42 +232,46 @@ def analyze_particles(file_path, fps, min_brightness, test_name, laser_location_
         fig = plt.figure()
         sorted_burn_times = np.sort(list(burn_times.values()))
         cdf = np.arange(1, len(sorted_burn_times)+1) / len(sorted_burn_times)
-        plt.plot(sorted_burn_times, cdf, marker='.', linestyle='none')
+        plt.plot(sorted_burn_times, cdf, marker='none', linestyle='-')
         plt.title('Burn Time CDF, ' + test_name)
         plt.xlabel('Burn Time (ms)')
         plt.ylabel('Cumulative Probability')
         fig.canvas.manager.set_window_title('Burn Time CDF, ' + test_name)
 
         #plot histogram of ignition times
-        fig = plt.figure()
-        hist = plt.hist(ignition_times.values(), bins=int((max(list(ignition_times.values())) - min(list(ignition_times.values())))*fps/1000000), color='blue', alpha=0.7, density=True)
-        plt.xlim(0, 2000)
-        plt.title('ignition times (us), ' + test_name)
-        fig.canvas.manager.set_window_title('Ignition Times, ' + test_name)
+        # fig = plt.figure()
+        # hist = plt.hist(ignition_times.values(), bins=int((max(list(ignition_times.values())) - min(list(ignition_times.values())))*fps/1000000), color='blue', alpha=0.7, density=True)
+        # plt.xlim(0, 2000)
+        # plt.title('ignition times (us), ' + test_name)
+        # fig.canvas.manager.set_window_title('Ignition Times, ' + test_name)
+        
+        # plot several random samples of brightness vs time
+        sample_num = 8
+        for n in range(sample_num):
+            rs = []
+            num_random = 3
+            for i in range(num_random):
+                rs.append(random.random())
+            #plot random sample of brightness vs time and particle tracks
+            fig = plt.figure()
+            for i in range(num_random):
+                r = rs[i]
+                id = list(data_dict.keys())[int(r*len(data_dict.keys()))]
+                num_frames = len(data_dict[id]['frames'])
+                plt.plot(np.linspace(0, num_frames-1, num_frames)/fps*1000, data_dict[id]['brightnesses'])
+            # plt.title(f'Particle brightness vs frame number for two random particles ({n}), ' + test_name)
+            plt.legend([list(data_dict.keys())[int(rs[i]*len(data_dict.keys()))] for i in range(num_random)])
+            plt.xlabel('Time (ms)', fontsize=14)
+            plt.ylabel('Brightness (pixel counts)', fontsize=14)
+            fig.canvas.manager.set_window_title('Random Sample of Brightness vs. Frame Number, ' + test_name)
 
-        rs = []
-        num_random = 8
-        for i in range(num_random):
-            rs.append(random.random())
-        #plot random sample of brightness vs frame number and particle tracks
+        # plot speed vs time for random sample
         fig = plt.figure()
         for i in range(num_random):
             r = rs[i]
             id = list(data_dict.keys())[int(r*len(data_dict.keys()))]
-            plt.plot(range(len(data_dict[id]['frames'])), data_dict[id]['brightnesses'])
-        plt.title('Particle brightness vs frame number for two random particles, ' + test_name)
-        plt.legend([list(data_dict.keys())[int(rs[i]*len(data_dict.keys()))] for i in range(num_random)])
-        # plt.legend(['Particle 1', 'Particle 2'])
-        plt.xlabel('Frame number')
-        plt.ylabel('Brightness (pixel counts)')
-        fig.canvas.manager.set_window_title('Random Sample of Brightness vs. Frame Number, ' + test_name)
-
-        #plot speed vs frame number for random sample
-        fig = plt.figure()
-        for i in range(num_random):
-            r = rs[i]
-            id = list(data_dict.keys())[int(r*len(data_dict.keys()))]
-            plt.plot(range(1, len(data_dict[id]['frames'])), data_dict[id]['speeds'])
+            num_frames = len(data_dict[id]['frames'])
+            plt.plot(np.linspace(1, num_frames-1, num_frames-1)/fps*1000, data_dict[id]['speeds'])
         plt.title('random sample of speed vs frame number, ' + test_name)
         plt.legend([list(data_dict.keys())[int(rs[i]*len(data_dict.keys()))] for i in range(num_random)])
         fig.canvas.manager.set_window_title('Random Sample of Speed vs. Frame Number, ' + test_name)
@@ -287,18 +282,6 @@ def analyze_particles(file_path, fps, min_brightness, test_name, laser_location_
         plt.title('speeds at first frame, ' + test_name)
         fig.canvas.manager.set_window_title('Speeds at First Frame, ' + test_name)
 
-        #plot burn time vs initial speed
-        fig = plt.figure()
-        plt.plot(initial_speeds.values(), burn_times.values(), '.')
-        plt.title('burn time vs initial speed, ' + test_name)
-        fig.canvas.manager.set_window_title('Burn Time vs. Initial Speed, ' + test_name)
-
-        #plot ignition time vs initial speed
-        fig = plt.figure()
-        plt.plot(initial_speeds.values(), ignition_times.values(), '.')
-        plt.title('ignition time vs initial speed, ' + test_name)
-        fig.canvas.manager.set_window_title('Ignition Time vs. Initial Speed, ' + test_name)
-
         #plot particle tracks of random sample
         fig = plt.figure()
         for i in range(num_random):
@@ -306,117 +289,576 @@ def analyze_particles(file_path, fps, min_brightness, test_name, laser_location_
             id = list(data_dict.keys())[int(r*len(data_dict.keys()))]
             plt.plot(data_dict[id]['xcoords'], data_dict[id]['ycoords'], '.-')
         plt.title('random sample of particle tracks, ' + test_name)
-        # laserxs = np.linspace(0, 1280, 300)
-        # laserys_upper = []
-        # laserys_lower = []
-        # for x in laserxs:
-        #     y_upper, y_lower = laser_location(x, laser_location_files)
-        #     laserys_upper.append(y_upper)
-        #     laserys_lower.append(y_lower)
-        # plt.plot(laserxs, laserys_upper, color='red', linestyle='-', label='Laser Upper Bound')
-        # plt.plot(laserxs, laserys_lower, color='red', linestyle='-', label='Laser Upper Bound')
         fig.canvas.manager.set_window_title('Random Sample of Particle Tracks, ' + test_name)
 
         #plot all particle tracks
         fig = plt.figure()
         for id in data_dict.keys():
-            plt.plot(data_dict[id]['xcoords'], [800 - y for y in data_dict[id]['ycoords']], 'b-')
-        plt.title('all particle tracks, ' + test_name)
+            plt.plot(data_dict[id]['xcoords'], [800 - y for y in data_dict[id]['ycoords']], 'b-', linewidth=0.5)
+        # plt.title('all particle tracks, ' + test_name)
+        plt.xlabel('x coordinate (pixels)', fontsize=14)
+        plt.ylabel('y coordinate (pixels)', fontsize=14)
+        plt.subplots_adjust(left=0.15)
         fig.canvas.manager.set_window_title('All Particle Tracks, ' + test_name)
 
-    print(f"Number of particles analyzed for", test_name, f": {len(burn_times)}")
-    print(f"Average burn time for", test_name, f": {np.mean(list(burn_times.values())):.4f} ms")
-    print(f"Average ignition time for", test_name, f": {np.mean(list(ignition_times.values())):.4f} us")
-    print(f"Average initial speed for", test_name, f": {np.mean(list(initial_speeds.values())):.4f} m/s\n")
+        #plot burn time vs initial speed - no correlation!
+        # fig = plt.figure()
+        # for id in data_dict.keys():
+        #     plt.plot(initial_speeds[id], burn_times[id], 'b.')
+        # plt.title('burn time vs initial speed, ' + test_name)
+        # plt.xlabel('initial speed (m/s)')
+        # plt.ylabel('burn time (ms)')
+        # fig.canvas.manager.set_window_title('Burn Time vs. Initial Speed, ' + test_name)
 
-    return list(burn_times.values()), list(ignition_times.values()), list(initial_speeds.values())
+
+        # make separate plots for mode 1 and mode 2 particles
+
+        # mode 1
+        rs = []
+        num_random = 10
+        for i in range(num_random):
+            rs.append(random.random())
+        fig = plt.figure()
+        for i in range(num_random):
+            r = rs[i]
+            id1 = list(mode1_data_dict.keys())[int(r*len(mode1_data_dict.keys()))]
+            num_frames = len(mode1_data_dict[id1]['frames'])
+            plt.plot(np.linspace(0, num_frames-1, num_frames)/fps*1000, mode1_data_dict[id1]['brightnesses']) 
+        fig.canvas.manager.set_window_title('Random sample of brightness vs. Time, mode 1, ' + test_name)
+        plt.title('Random sample of brightness vs. Time, mode 1, ' + test_name)
+        plt.xlabel('Time (ms)')
+        plt.ylabel('Brightness (pixel counts)')
+
+        # mode 2
+        if len(mode2_data_dict.keys()) > 0:
+            fig = plt.figure()
+            for i in range(num_random):
+                r = rs[i]
+                id2 = list(mode2_data_dict.keys())[int(r*len(mode2_data_dict.keys()))]
+                num_frames = len(mode2_data_dict[id2]['frames'])
+                plt.plot(np.linspace(0, num_frames-1, num_frames)/fps*1000, mode2_data_dict[id2]['brightnesses'])  
+            fig.canvas.manager.set_window_title('Random sample of brightness vs. Time, mode 2, ' + test_name)
+            plt.title('Random sample of brightness vs. Time, mode 2, ' + test_name)
+            plt.xlabel('Time (ms)')
+            plt.ylabel('Brightness (pixel counts)')
+
+        # plot histogram of distance traveled from detection to peak brightness
+
+        # overall
+        max_dists = []
+        for id in data_dict.keys():
+            max_b = max(data_dict[id]['brightnesses'])
+            max_y = data_dict[id]['ycoords'][data_dict[id]['brightnesses'].index(max_b)]
+            max_dists.append(data_dict[id]['ycoords'][0] - max_y)
+        fig = plt.figure()
+        hist = plt.hist(max_dists, bins=100, color='blue', alpha=0.7)
+        fig.canvas.manager.set_window_title('Brightest y histogram, ' + test_name)
+        plt.title('Brightest distance histogram, ' + test_name)
+
+        # mode 1
+        max_dists = []
+        for id in mode1_data_dict.keys():
+            max_b = max(mode1_data_dict[id]['brightnesses'])
+            max_y = mode1_data_dict[id]['ycoords'][mode1_data_dict[id]['brightnesses'].index(max_b)]
+            max_dists.append(mode1_data_dict[id]['ycoords'][0] - max_y)
+        fig = plt.figure()
+        hist = plt.hist(max_dists, bins=100, color='blue', alpha=0.7)
+        fig.canvas.manager.set_window_title('Brightest y histogram, mode 1, ' + test_name)
+        plt.title('Brightest distance histogram, mode 1, ' + test_name)
+
+        # mode 2
+        max_dists = []
+        for id in mode2_data_dict.keys():
+            max_b = max(mode2_data_dict[id]['brightnesses'])
+            max_y = mode2_data_dict[id]['ycoords'][mode2_data_dict[id]['brightnesses'].index(max_b)]
+            max_dists.append(mode2_data_dict[id]['ycoords'][0] - max_y)
+        fig = plt.figure()
+        hist = plt.hist(max_dists, bins=100, color='blue', alpha=0.7)
+        fig.canvas.manager.set_window_title('Brightest y histogram, mode 2, ' + test_name)
+        plt.title('Brightest distance histogram, mode 2, ' + test_name)
+
+    mode_1_initial_speeds = [initial_speeds[id] for id in mode1_burn_times.keys()]
+    mode_2_initial_speeds = [initial_speeds[id] for id in mode2_burn_times.keys()]
+
+    #output print statements
+    print(f"Number of particles before filtering for", test_name, f": {num_before_filtering}")
+    print(f"Number of particles analyzed for", test_name, f": {len(burn_times)}")
+    print(f'Number of mode 1 particles for', test_name, f": {len(mode1_burn_times)}")
+    print(f'Number of mode 2 particles for', test_name, f": {len(mode2_burn_times)}")
+    print(f"Overall average burn time for", test_name, f": {np.mean(list(burn_times.values())):.4f} ms")        
+    print(f"Mode 1 average burn time for", test_name, f": {np.mean(list(mode1_burn_times.values())):.4f} ms")
+    print(f"Mode 2 average burn time for", test_name, f": {np.mean(list(mode2_burn_times.values())):.4f} ms")
+    # print(f"Average ignition time for", test_name, f": {np.mean(list(ignition_times.values())):.4f} us")
+    print(f"Average initial speed for", test_name, f": {np.mean(list(initial_speeds.values())):.4f} m/s")
+    print(f"Mode 1 average initial speed for", test_name, f": {np.mean(mode_1_initial_speeds):.4f} m/s")
+    print(f"Mode 2 average initial speed for", test_name, f": {np.mean(mode_2_initial_speeds):.4f} m/s")
+    print(f'percentage of particles in mode 2 for', test_name, f": {len(mode2_burn_times)/len(burn_times)*100:.4f}\n")
+
+    # return data
+    return list(burn_times.values()), list(ignition_times.values()), list(initial_speeds.values()), list(mode2_burn_times.values()), data_dict
+
+# trims data to a smaller csv file
+def write_trimmed_data(file_path, data_dict):
+    with open(file_path, 'w') as f:
+        f.write('\n')
+        for id in data_dict.keys():
+            f.write(f"{id}\n")
+            f.write("frames," + ",".join([str(frame) for frame in data_dict[id]['frames']]) + "\n")
+            f.write("xcoords," + ",".join([str(x) for x in data_dict[id]['xcoords']]) + "\n")
+            f.write("ycoords," + ",".join([str(y) for y in data_dict[id]['ycoords']]) + "\n")
+            f.write("brightnesses," + ",".join([str(b) for b in data_dict[id]['brightnesses']]) + "\n")
+            f.write("sizes," + ",".join([str(s) for s in data_dict[id]['sizes']]) + "\n")
 
 if __name__ == "__main__":
-    #input parameters
-    fps = 25000
-    min_brightness = 12500
-    file_names = [r"C:\Users\Griffin\Documents\Research\results\20251015\test1_calibrated_particle_tracking_results.csv",
-                  r"C:\Users\Griffin\Documents\Research\results\20251015\test2_calibrated_particle_tracking_results.csv",
-                  r"C:\Users\Griffin\Documents\Research\results\20251015\test3_calibrated_particle_tracking_results.csv",
-                  r"C:\Users\Griffin\Documents\Research\results\20251015\test4_calibrated_particle_tracking_results.csv",
-                  r"C:\Users\Griffin\Documents\Research\results\20251015\test5_calibrated_particle_tracking_results.csv",
-                  r"C:\Users\Griffin\Documents\Research\results\20251015\test6_calibrated_particle_tracking_results.csv",
-                  r"C:\Users\Griffin\Documents\Research\results\20251015\test7_calibrated_particle_tracking_results.csv",
-                  r"C:\Users\Griffin\Documents\Research\results\20251015\test8_calibrated_particle_tracking_results.csv",
-                  r"C:\Users\Griffin\Documents\Research\results\20251015\test9_calibrated_particle_tracking_results.csv",
-                  r"C:\Users\Griffin\Documents\Research\results\20251015\test10_calibrated_particle_tracking_results.csv",
-                  r"C:\Users\Griffin\Documents\Research\results\20251015\test11_calibrated_particle_tracking_results.csv"]
-    test_names = ['Al', 'AlGa5', 'AlGa10', 'AlIn', 'H-5', 'H-3', 'Al2O3', 'AlLi3', 'AlLi5', 'AlLi10', 'AlLi20']
-    
-    #Read laser location data
-    laser_location_files_array = [[r"C:\Users\Griffin\Documents\Research\results\20250925\20250925 beam location.csv"],
-                                  [r"C:\Users\Griffin\Documents\Research\results\20251015\beam location 1.csv",
-                                   r"C:\Users\Griffin\Documents\Research\results\20251015\beam location 1.csv"]]
 
+    # input parameters
+
+    min_brightnesses = [10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000,
+                        4000, 10000, 10000, 10000, 10000, 10000, 10000, 10000,
+                        5000, 9000, 9000, 8000, 8000, 8000, 8000, 8000,
+                        10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, #for 25-32 micron sizes use 10000, for H3 and H5 use 8000, for filter 2 use 4000
+                        10000, 8000, 23000,
+                        10000,
+                        10000, 10000, 10000,
+                        10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000,
+                        5000, 5000, 5000, 5000,
+                        8000, 8000, 8000, 8000,
+                        10000, 10000, 10000,
+                        10000, 10000, 10000]
+    
+    file_names = [r"C:\Users\Griffin\Documents\Research\results\20251015\test1_calibrated_particle_tracking_results.csv", # 0
+                  r"C:\Users\Griffin\Documents\Research\results\20251015\test2_calibrated_particle_tracking_results.csv", # 1
+                  r"C:\Users\Griffin\Documents\Research\results\20251015\test3_calibrated_particle_tracking_results.csv", # 2
+                  r"C:\Users\Griffin\Documents\Research\results\20251015\test4_calibrated_particle_tracking_results.csv", # 3
+                  r"C:\Users\Griffin\Documents\Research\results\20251015\test8_calibrated_particle_tracking_results.csv", # 4
+                  r"C:\Users\Griffin\Documents\Research\results\20251015\test9_calibrated_particle_tracking_results.csv", # 5
+                  r"C:\Users\Griffin\Documents\Research\results\20251015\test10_calibrated_particle_tracking_results.csv", # 6
+                  r"C:\Users\Griffin\Documents\Research\results\20251015\test11_calibrated_particle_tracking_results.csv", # 7
+
+                  r"C:\Users\Griffin\Documents\Research\results\20251110\test1_calibrated_particle_tracking_results.csv", # 8
+                  r"C:\Users\Griffin\Documents\Research\results\20251110\test2_calibrated_particle_tracking_results.csv", # 9
+                  r"C:\Users\Griffin\Documents\Research\results\20251110\test3_calibrated_particle_tracking_results.csv", # 10
+                  r"C:\Users\Griffin\Documents\Research\results\20251110\test4_calibrated_particle_tracking_results.csv", # 11
+                  r"C:\Users\Griffin\Documents\Research\results\20251110\test5_calibrated_particle_tracking_results.csv", # 12
+                  r"C:\Users\Griffin\Documents\Research\results\20251110\test6_calibrated_particle_tracking_results.csv", # 13
+                  r"C:\Users\Griffin\Documents\Research\results\20251110\test7_calibrated_particle_tracking_results.csv", # 14
+                  None,                                                                                                   # 15
+
+                  r"C:\Users\Griffin\Documents\Research\results\20251110\test9_calibrated_particle_tracking_results.csv",  # 16
+                  r"C:\Users\Griffin\Documents\Research\results\20251110\test10_calibrated_particle_tracking_results.csv", # 17
+                  r"C:\Users\Griffin\Documents\Research\results\20251110\test11_calibrated_particle_tracking_results.csv", # 18
+                  r"C:\Users\Griffin\Documents\Research\results\20251110\test12_calibrated_particle_tracking_results.csv", # 19
+                  r"C:\Users\Griffin\Documents\Research\results\20251110\test13_calibrated_particle_tracking_results.csv", # 20
+                  None,                                                                                                    # 21
+                  r"C:\Users\Griffin\Documents\Research\results\20251110\test15_calibrated_particle_tracking_results.csv", # 22
+                  r"C:\Users\Griffin\Documents\Research\results\20251110\test16_calibrated_particle_tracking_results.csv", # 23
+
+                  r"C:\Users\Griffin\Documents\Research\results\20251110\test17_calibrated_particle_tracking_results.csv", # 24
+                  r"C:\Users\Griffin\Documents\Research\results\20251110\test18_calibrated_particle_tracking_results.csv", # 25
+                  r"C:\Users\Griffin\Documents\Research\results\20251110\test19_calibrated_particle_tracking_results.csv", # 26
+                  r"C:\Users\Griffin\Documents\Research\results\20251110\test20_calibrated_particle_tracking_results.csv", # 27
+                  r"C:\Users\Griffin\Documents\Research\results\20251110\test21_calibrated_particle_tracking_results.csv", # 28
+                  r"C:\Users\Griffin\Documents\Research\results\20251110\test22_calibrated_particle_tracking_results.csv", # 29
+                  r"C:\Users\Griffin\Documents\Research\results\20251110\test23_calibrated_particle_tracking_results.csv", # 30
+                  r"C:\Users\Griffin\Documents\Research\results\20251110\test24_calibrated_particle_tracking_results.csv", # 31
+
+                  r"C:\Users\Griffin\Documents\Research\results\20251015\test5_calibrated_particle_tracking_results.csv", # 32
+                  r"C:\Users\Griffin\Documents\Research\results\20251015\test6_calibrated_particle_tracking_results.csv", # 33
+                  r"C:\Users\Griffin\Documents\Research\results\20251015\test7_calibrated_particle_tracking_results.csv", # 34
+
+                  r"C:\Users\Griffin\Documents\Research\results\20250925\test7_calibrated_particle_tracking_results.csv", # 35
+
+                  r"C:\Users\Griffin\Documents\Research\results\20251205\test1_calibrated_particle_tracking_results.csv", # 36
+                  r"C:\Users\Griffin\Documents\Research\results\20251205\test2_calibrated_particle_tracking_results.csv", # 37
+                  r"C:\Users\Griffin\Documents\Research\results\20251205\test3_calibrated_particle_tracking_results.csv", # 38
+
+                  r"C:\Users\Griffin\Documents\Research\results\20251215\test1_1_calibrated_particle_tracking_results.csv", # 39
+                  r"C:\Users\Griffin\Documents\Research\results\20251215\test1_2_calibrated_particle_tracking_results.csv", # 40
+                  r"C:\Users\Griffin\Documents\Research\results\20251215\test1_3_calibrated_particle_tracking_results.csv", # 41
+                  r"C:\Users\Griffin\Documents\Research\results\20251215\test2_1_calibrated_particle_tracking_results.csv", # 42
+                  r"C:\Users\Griffin\Documents\Research\results\20251215\test2_2_calibrated_particle_tracking_results.csv", # 43
+                  r"C:\Users\Griffin\Documents\Research\results\20251215\test2_3_calibrated_particle_tracking_results.csv", # 44
+                  r"C:\Users\Griffin\Documents\Research\results\20251215\test3_1_calibrated_particle_tracking_results.csv", # 45
+                  r"C:\Users\Griffin\Documents\Research\results\20251215\test3_2_calibrated_particle_tracking_results.csv", # 46
+                  r"C:\Users\Griffin\Documents\Research\results\20251215\test3_3_calibrated_particle_tracking_results.csv", # 47
+                  r"C:\Users\Griffin\Documents\Research\results\20251215\test4_1_calibrated_particle_tracking_results.csv", # 48
+                  r"C:\Users\Griffin\Documents\Research\results\20251215\test4_2_calibrated_particle_tracking_results.csv", # 49
+                  r"C:\Users\Griffin\Documents\Research\results\20251215\test4_3_calibrated_particle_tracking_results.csv", # 50
+                  r"C:\Users\Griffin\Documents\Research\results\20251215\test5_1_calibrated_particle_tracking_results.csv", # 51
+                  r"C:\Users\Griffin\Documents\Research\results\20251215\test5_2_calibrated_particle_tracking_results.csv", # 52
+                  r"C:\Users\Griffin\Documents\Research\results\20251215\test5_3_calibrated_particle_tracking_results.csv", # 53
+                  r"C:\Users\Griffin\Documents\Research\results\20251215\test6_1_calibrated_particle_tracking_results.csv", # 54
+                  r"C:\Users\Griffin\Documents\Research\results\20251215\test6_2_calibrated_particle_tracking_results.csv", # 55
+                  r"C:\Users\Griffin\Documents\Research\results\20251215\test6_3_calibrated_particle_tracking_results.csv", # 56
+                  r"C:\Users\Griffin\Documents\Research\results\20251215\test7_1_calibrated_particle_tracking_results.csv", # 57
+                  r"C:\Users\Griffin\Documents\Research\results\20251215\test7_2_calibrated_particle_tracking_results.csv", # 58
+                  r"C:\Users\Griffin\Documents\Research\results\20251215\test7_3_calibrated_particle_tracking_results.csv", # 59
+
+                  r"C:\Users\Griffin\Documents\Research\results\20251215\test8_calibrated_particle_tracking_results.csv", # 60
+                  r"C:\Users\Griffin\Documents\Research\results\20251215\test9_calibrated_particle_tracking_results.csv", # 61
+                  r"C:\Users\Griffin\Documents\Research\results\20251215\test10_calibrated_particle_tracking_results.csv", # 62
+                  r"C:\Users\Griffin\Documents\Research\results\20251215\test11_calibrated_particle_tracking_results.csv", # 63
+                  r"C:\Users\Griffin\Documents\Research\results\20251215\test12_calibrated_particle_tracking_results.csv", # 64
+                  r"C:\Users\Griffin\Documents\Research\results\20251215\test13_calibrated_particle_tracking_results.csv", # 65
+                  r"C:\Users\Griffin\Documents\Research\results\20251215\test14_calibrated_particle_tracking_results.csv", # 66
+                  r"C:\Users\Griffin\Documents\Research\results\20251215\test15_calibrated_particle_tracking_results.csv", # 67
+                  r"C:\Users\Griffin\Documents\Research\results\20260107\test1_calibrated_particle_tracking_results.csv", # 68
+                  r"C:\Users\Griffin\Documents\Research\results\20260107\test2_calibrated_particle_tracking_results.csv", # 69
+                  r"C:\Users\Griffin\Documents\Research\results\20260107\test3_calibrated_particle_tracking_results.csv", # 70
+                  r"C:\Users\Griffin\Documents\Research\results\20260107\test4_1_calibrated_particle_tracking_results.csv", # 71
+                  r"C:\Users\Griffin\Documents\Research\results\20260107\test4_2_calibrated_particle_tracking_results.csv", # 72
+                  r"C:\Users\Griffin\Documents\Research\results\20260107\test4_3_calibrated_particle_tracking_results.csv"] # 73
+                  
+    
+    
+    
+    test_names = ['Al, 25000fps, 500+-25nm (1)', 'Al-Ga5, 25000fps, 500+-25nm (1)', 'Al-Ga10, 25000fps, 500+-25nm (1)', 'Al-In, 25000fps, 500+-25nm (1)', 'Al-Li3, 25000fps, 500+-25nm (1)', 'Al-Li5, 25000fps, 500+-25nm (1)', 'Al-Li10, 25000fps, 500+-25nm (1)', 'Al-Li20, 25000fps, 500+-25nm (1)',
+                  'Al, 25000fps, 500+-25nm (2)', 'Al-Ga5, 25000fps, 500+-25nm (2)', 'Al-Ga10, 25000fps, 500+-25nm (2)', 'Al-In, 25000fps, 500+-25nm (2)', 'Al-Li3, 25000fps, 500+-25nm (2)', 'Al-Li5, 25000fps, 500+-25nm (2)', 'Al-Li10, 25000fps, 500+-25nm (2)', 'Al-Li20, 25000fps, 500+-25nm (2)',
+                  'Al, 25000fps, 640+-10nm', 'Al-Ga5, 25000fps, 640+-10nm', 'Al-Ga10, 25000fps, 640+-10nm', 'Al-In, 25000fps, 640+-10nm', 'Al-Li3, 25000fps, 640+-10nm', 'Al-Li5, 25000fps, 640+-10nm', 'Al-Li10, 25000fps, 640+-10nm', 'Al-Li20, 25000fps, 640+-10nm',
+                  'Al, 65000fps, 500+-25nm', 'Al-Ga5, 65000fps, 500+-25nm', 'Al-Ga10, 65000fps, 500+-25nm', 'Al-In, 65000fps, 500+-25nm', 'Al-Li3, 65000fps, 500+-25nm', 'Al-Li5, 65000fps, 500+-25nm', 'Al-Li10, 65000fps, 500+-25nm', 'Al-Li20, 65000fps, 500+-25nm',
+                  'H5, 25000fps, 500+-25nm', 'H3, 25000fps, 500+-25nm', 'Al2O3, 25000fps, 500+-25nm',
+                  'H3, 25000fps, 500+-25',
+                  'Al, 45000fps, 500+-25nm', 'Al, 45000fps, 500+-25nm', 'Al, 45000fps, 500+-25nm, 32-38 micron',
+                  'Al, 75W', 'Al, 55W', 'Al, 35W', 'Al-Ga5, 75W', 'Al-Ga5, 55W', 'Al-Ga5, 35W', 'Al-Ga10, 75W', 'Al-Ga10, 55W', 'Al-Ga10, 35W', 'Al-In, 75W', 'Al-In, 55W', 'Al-In, 35W', 'Al-Li3, 75W', 'Al-Li3, 55W', 'Al-Li3, 35W', 'Al-Li5, 75W', 'Al-Li5, 55W', 'Al-Li5, 35W', 'Al-Li10, 75W', 'Al-Li10, 55W', 'Al-Li10, 35W',
+                  'Al, 671+-5nm', 'Al-Li3, 671+-5nm', 'Al-Li5, 671+-5nm', 'Al-Li10, 671+-5nm',
+                  'H5, 40W (1)', 'H5, 40W (2)', 'H5, 20W (1)', 'H5, 20W (2)',
+                  'Al-Li20 (Adranos, 1)', 'Al-Li20 (Adranos, 2)', 'Al-Li20 (Adranos, 3)',
+                  'Al-Li20 (Adranos), 75W', 'Al-Li20 (Adranos), 55W', 'Al-Li20 (Adranos), 35W']
+
+    fpss = [25000, 25000, 25000, 25000, 25000, 25000, 25000, 25000,
+            25000, 25000, 25000, 25000, 25000, 25000, 25000, 25000,
+            25000, 25000, 25000, 25000, 25000, 25000, 25000, 25000,
+            65000, 65000, 65000, 65000, 65000, 65000, 65000, 65000,
+            25000, 25000, 25000,
+            25000,
+            45000, 45000, 45000,
+            25000, 25000, 25000, 25000, 25000, 25000, 25000, 25000, 25000, 25000, 25000, 25000, 25000, 25000, 25000, 25000, 25000, 25000, 25000, 25000, 25000,
+            25000, 25000, 25000, 25000,
+            25000, 25000, 25000, 25000,
+            25000, 25000, 25000,
+            25000, 25000, 25000]
+    
+            # [0,  1,  2,  3,  4,  5,  6,  7,          October tests, 25000fps, 500+-25nm
+            #  8,  9,  10, 11, 12, 13, 14, 15,         November tests, 25000fps, 500+-25nm
+            #  16, 17, 18, 19, 20, 21, 22, 23,         November tests, 25000fps, 640+-10nm
+            #  24, 25, 26, 27, 28, 29, 30, 31,         November tests, 65000fps, 500+-25nm
+            #  32, 33, 34,                             October H5, H3, Al2O3 validation tests
+            #  35,                                     September H3 validation
+            #  36, 37, 38,                             December tests of Al, 38 is with different particle size
+            #  39, 40, 41,                             December min ignition energy tests, Al
+            #  42, 43, 44, 45, 46, 47, 48, 49, 50,     December min ignition energy tests, Al-Ga and Al-In
+            #  51, 52, 53, 54, 55, 56, 57, 58, 59,     December min ignition energy tests, Al-Li
+            #  60, 61, 62, 63,                         December 671nm Li peak tests
+            #  64, 65, 66, 67,                         December H5 tests
+            #  68, 69, 70,                             January Al-Li20 tests
+            #  71, 72, 73]                             Al-Li20 min ignition energy tests
+
+    files_to_analyze = [0, 1, 2, 3, 9, 10, 11, 24, 25, 26, 27, 36, 37, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50] # Al, Al-Ga and Al-In
+    # files_to_analyze = [0, 4, 5, 6, 12, 13, 14, 24, 28, 29, 30, 36, 37, 39, 40, 41, 51, 52, 53, 54, 55, 56, 57, 58, 59, 68, 69, 70, 71, 72, 73] # Al and Al-Li
+    # files_to_analyze = [39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 71, 73] # min ignition energy tests
+    # files_to_analyze = [0, 1, 2, 3, 4, 5, 6, 9, 10, 11, 12, 13, 14, 24, 25, 26, 27, 28, 29, 30, 36, 37, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59] #all
+    # files_to_analyze = [6, 14, 30]
+    diagnostic_plots = False
+
+    #initialize output arrays
+    trimmed_file_names = []
     burn_times = []
     ignition_times = []
     speed_lists = []
+    mode2_tbs = []
+    for i in range(len(file_names)):
+        if file_names[i] is not None:
+            trimmed_file_names.append(file_names[i][:52] + r"\trimmed" + file_names[i][52:])
+        else:
+            trimmed_file_names.append(None)
 
-    #analyze each file
-    files_to_analyze = [0, 1, 2, 3, 4, 6, 7, 8, 9, 10]
-    laser_locations = [1]
+    #analyze specified files
     for i in range(len(file_names)):
         if i in files_to_analyze:
-            file_name = file_names[i]
-            testi_burn_times, testi_ignition_times, speeds = analyze_particles(file_name, fps, min_brightness, test_names[i], plots=True)
+            # file_name = file_names[i]
+            file_name = trimmed_file_names[i]
+            testi_burn_times, testi_ignition_times, speeds, mode2_tbis, data_dict = analyze_particles(file_name, fpss[i], min_brightnesses[i], test_names[i], plots=diagnostic_plots)
             burn_times.append(testi_burn_times)
             ignition_times.append(testi_ignition_times)
             speed_lists.append(speeds)
+            mode2_tbs.append(mode2_tbis)
+
+            # uncomment to save a trimmed data file:
+            # write_trimmed_data(file_name[:52] + r"\trimmed" + file_name[52:], data_dict)
         else:
             burn_times.append([])
             ignition_times.append([])
             speed_lists.append([])
+            mode2_tbs.append([])
 
-    #uncomment to add burn/ignition times for first quarter and last quarter of a test
-    # burn_times.append([bt for j, bt in enumerate(burn_times[0]) if j < len(burn_times[0])/4])
-    # burn_times.append([bt for j, bt in enumerate(burn_times[0]) if j > 3*len(burn_times[0])/4])
-    # ignition_times.append([it for j, it in enumerate(ignition_times[0]) if j < len(ignition_times[0])/4])
-    # ignition_times.append([it for j, it in enumerate(ignition_times[0]) if j > 3*len(ignition_times[0])/4])
-    # test_names.append(test_names[0] + " Q1")
-    # test_names.append(test_names[0] + " Q4")
+    #lump tests of the same material together
+    lumped_burn_times = []
+    lumped_mode2_tbs = []
+    lumped_names = ['Al', 'Al-Ga5', 'Al-Ga10', 'Al-In', 'Al-Li3', 'Al-Li5', 'Al-Li10', 'Al-Li20', 'H5']
+    tests_to_lump = [[0, 8, 24, 36, 37, 39, 40, 41], [1, 9, 25, 42, 43, 44], [2, 10, 26, 45, 46, 47], [3, 11, 27, 48, 49, 50], [4, 12, 28, 51, 52, 53], [5, 13, 29, 54, 55, 56], [6, 14, 30, 57, 58, 59], [68, 69, 70, 71, 72, 73], [64, 65, 66, 67]]
     
-    
+    # lumped_names = ['Al 75W', 'Al 35W', 'Al-Ga5 75W', 'Al-Ga5 35W', 'Al-Ga10 75W', 'Al-Ga10 35W', 'Al-In 75W', 'Al-In 35W',
+    #                 'Al-Li3 75W', 'Al-Li3 35W', 'Al-Li5 75W', 'Al-Li5 35W', 'Al-Li10 75W', 'Al-Li10 35W', 'Al-Li20 75W', 'Al-Li20 35W']
+    # tests_to_lump = [[39], [40], [42], [44], [45], [47], [48], [50], [51], [53], [54], [56], [57], [59], [71], [73]]
+
+    for tests in tests_to_lump:
+        lump = []
+        lump_mode2 = []
+        for test in tests:
+            lump.extend(burn_times[test])
+            lump_mode2.extend(mode2_tbs[test])
+        lumped_mode2_tbs.append(lump_mode2)
+        lumped_burn_times.append(lump)
+    # print(np.sort(list(lumped_mode2_tbs[4])))
     burn_times = np.array(burn_times, dtype=object)
     ignition_times = np.array(ignition_times, dtype=object)
 
+
     # uncomment to perform a statistical t-tests
     
-    tests_to_compare = [(0,1), (0,2), (0,3), (1,2), (1,3), (2,3), (0,7), (0,8), (0,9), (0,10), (7,8), (7,9), (7,10), (8,9), (8,10), (9,10)]
+    # tests_to_compare = [(0,1), (0,2), (0,3), (0,7), (0,8), (0,9)]
+    # for test_pair in tests_to_compare:
+    #     test1 = test_pair[0]
+    #     test2 = test_pair[1]
+    #     if len(burn_times[test1]) < 1 or len(burn_times[test2]) < 1:
+    #         continue
+    #     t_stat, p_val = stats.ttest_ind(burn_times[test1], burn_times[test2], equal_var=False)
+    #     print(f"t-statistic for a difference in burn times between {test_names[test1]} and {test_names[test2]} : {t_stat:.4f}, p-value: {p_val:.7f}")
+    #     t_stat, p_val = stats.ttest_ind(mode2_tbs[test1], mode2_tbs[test2], equal_var=False)
+    #     print(f"t-statistic for a difference in mode 2 burn times between {test_names[test1]} and {test_names[test2]} : {t_stat:.4f}, p-value: {p_val:.7f}")
+    #     t_stat, p_val = stats.ttest_ind(ignition_times[test1], ignition_times[test2], equal_var=False)
+    #     print(f"t-statistic for a difference in ignition times between {test_names[test1]} and {test_names[test2]} : {t_stat:.4f}, p-value: {p_val:.7f}\n")
 
-    for test_pair in tests_to_compare:
-        test1 = test_pair[0]
-        test2 = test_pair[1]
-        if len(burn_times[test1]) < 1 or len(burn_times[test2]) < 1:
-            continue
-        t_stat, p_val = stats.ttest_ind(burn_times[test1], burn_times[test2], equal_var=False)
-        print(f"t-statistic for a difference in burn times between {test_names[test1]} and {test_names[test2]} : {t_stat:.4f}, p-value: {p_val:.7f}")
 
-        t_stat, p_val = stats.ttest_ind(ignition_times[test1], ignition_times[test2], equal_var=False)
-        print(f"t-statistic for a difference in ignition times between {test_names[test1]} and {test_names[test2]} : {t_stat:.4f}, p-value: {p_val:.7f}\n")
-
-
-    #uncomment for error bar plot
+    #uncomment for error bar plots of frequency vs burn time bin with several materials overlayed
 
     # fig = plt.figure()
     # colors = ['r', 'b', 'g', 'orange']
-    # for i, burn_time_arr in enumerate(burn_times):
-    #     counts, bin_edges = np.histogram(burn_time_arr, bins=5, range=(0, 1.5))
-    #     bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
-    #     probs = counts/len(burn_time_arr)
-    #     errors = np.sqrt(counts)/len(burn_time_arr)  # Poisson errors
+    # i = 0
+    # for burn_time_arr in burn_times:
+    #     if len(burn_time_arr) < 1:
+    #         continue
+    #     else:
+    #         counts, bin_edges = np.histogram(burn_time_arr, bins=4, range=(0, 3))
+    #         bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+    #         probs = counts/len(burn_time_arr)
+    #         errors = np.sqrt(counts)/len(burn_time_arr)  # Poisson errors
 
-    #     bias = [-0.015, -0.005, 0.005, 0.015]
-    #     plt.errorbar(bin_centers+bias[i], probs, yerr=errors, fmt='o', capsize=3, color=colors[i], ecolor=colors[i])
-    #     plt.plot(bin_centers+bias[i], probs, colors[i])
+    #         bias = [-0.015, -0.005, 0.005, 0.015]
+    #         plt.errorbar(bin_centers+bias[i], probs, yerr=errors, fmt='o', capsize=3, color=colors[i], ecolor=colors[i])
+    #         plt.plot(bin_centers+bias[i], probs, colors[i])
+    #         i += 1
     # plt.xlabel('Burn Times (ms)')
     # plt.ylabel('Relative Frequency')
-    # plt.legend(test_names)
+    # plt.legend(test_names[:4])
     # plt.title('Error Bar Plot of all Tests')
     # fig.canvas.manager.set_window_title('Error Bar Plot of all Tests')
+
+    
+    # uncomment for error bar plots of average burn times with material type on x-axis for individual tests
+
+    # avg_burn_times = []
+    # errs = []
+    # for burn_time_arr in burn_times:
+    #     if len(burn_time_arr) < 1:
+    #         continue
+    #     else:
+    #         avg_burn_times.append(np.mean(burn_time_arr))
+    #         errs.append(np.std(burn_time_arr)/np.sqrt(len(burn_time_arr)))
+    # plt.figure()
+    # plt.errorbar([test_names[i] for i in files_to_analyze], avg_burn_times, yerr = errs, fmt = 'o', color='b', alpha=0.5, capsize=5)
+    # plt.xticks(fontsize=6)
+    # plt.title('Average Burn Times of Al and AlLi Tests')
+    # plt.xlabel('Particle Type')
+    # plt.ylabel('Average Burn Time (ms)')
+
+
+    # uncomment for error bar plots of average burn times with material type on x-axis for lumped tests
+
+    # avg_burn_times = []
+    # errs = []
+    # for burn_time_arr in lumped_burn_times:
+    #     if len(burn_time_arr) < 1:
+    #         avg_burn_times.append(np.nan)
+    #         errs.append(np.nan)
+    #     else:
+    #         avg_burn_times.append(np.mean(burn_time_arr))
+    #         errs.append(np.std(burn_time_arr)/np.sqrt(len(burn_time_arr)))
+    # plt.figure()
+    # names_to_plot = [lumped_names[i] for i in range(len(lumped_names)) if not np.isnan(errs[i])]
+    # tbs_to_plot = [abt for abt in avg_burn_times if not np.isnan(abt)]
+    # errs_to_plot = [err for err in errs if not np.isnan(err)]
+    # plt.errorbar(names_to_plot, tbs_to_plot, yerr = errs_to_plot, fmt = 'o', color='b', alpha=1, capsize=7)
+    # plt.xticks(fontsize=10)
+    # plt.yticks(fontsize=10)
+    # plt.subplots_adjust(left=0.2)
+    # plt.margins(x=0.2)
+    # # plt.title('Average Burn Times of Al and AlLi Tests')
+    # # plt.xlabel('Particle Type')
+    # plt.ylabel('Average Burn Time (ms)', fontsize=12)
+
+
+    # uncomment for error bar plots of average mode 2 burn times with material type on x-axis for lumped tests
+
+    avg_burn_times = []
+    errs = []
+    for burn_time_arr in lumped_mode2_tbs:
+        if len(burn_time_arr) < 1:
+            avg_burn_times.append(np.nan)
+            errs.append(np.nan)
+        else:
+            avg_burn_times.append(np.mean(burn_time_arr))
+            errs.append(np.std(burn_time_arr)/np.sqrt(len(burn_time_arr)))
+    plt.figure()
+    plot_names = [lumped_names[i] for i in range(len(lumped_names)) if not np.isnan(errs[i])]
+    plot_tbs = [abt for abt in avg_burn_times if not np.isnan(abt)]
+    plot_errs = [err for err in errs if not np.isnan(err)]
+    plt.errorbar(plot_names, plot_tbs, yerr = plot_errs, fmt = 'none', color='k', alpha=1, capsize=5)
+    plt.bar(plot_names, plot_tbs, alpha = 1)
+    plt.xticks(fontsize=10)
+    plt.yticks(fontsize=10)
+    plt.subplots_adjust(left=0.2)
+    plt.margins(x=0.05)
+    # plt.title('Average Mode 2 Burn Times of Al and AlLi Tests')
+    # plt.xlabel('Particle Type')
+    plt.ylabel('Average Burning Time (ms)', fontsize=13)
+    # plt.ylim(1, 1.6) # for Al-Li
+    plt.ylim(1.1, 1.8)
+
+
+    # uncomment for error bar plot of 75W vs. 35W burn times
+
+    # avg_burn_times = []
+    # errs = []
+    # for burn_time_arr in lumped_mode2_tbs:
+    #     if len(burn_time_arr) < 1:
+    #         avg_burn_times.append(np.nan)
+    #         errs.append(np.nan)
+    #     else:
+    #         avg_burn_times.append(np.mean(burn_time_arr))
+    #         errs.append(np.std(burn_time_arr)/np.sqrt(len(burn_time_arr)))
+    # fig, ax = plt.subplots()
+    # x = np.arange(8)
+    # width = 0.35
+    # plot_names = ['', 'Al', 'Al-Ga5', 'Al-Ga10', 'Al-In', 'Al-Li3', 'Al-Li5', 'Al-Li10', 'Al-Li20']
+    # tbs = [abt for abt in avg_burn_times if not np.isnan(abt)]
+    # errs = [err for err in errs if not np.isnan(err)]
+    # tbs75 = [tbs[i] for i in range(len(tbs)) if i%2 == 0]
+    # tbs35 = [tbs[i] for i in range(len(tbs)) if i%2 == 1]
+    # errs75 = [errs[i] for i in range(len(errs)) if i%2 == 0]
+    # errs35 = [errs[i] for i in range(len(errs)) if i%2 == 1]
+    # # plt.errorbar(plot_names, plot_tbs, yerr = plot_errs, fmt = 'none', color='k', alpha=1, capsize=5)
+    # ax.bar(x - width/2, tbs75, width, label='75W', yerr=errs75, capsize=7)
+    # ax.bar(x + width/2, tbs35, width, label='35W', yerr=errs35, capsize=7)
+    # ax.set_xticklabels(plot_names, fontsize=14)
+    # ax.legend(['75W', '35W'], fontsize=14)
+    # plt.yticks(fontsize=10)
+    # plt.subplots_adjust(left=0.2)
+    # plt.margins(x=0.05)
+    # plt.ylabel('Average Burning Time (ms)', fontsize=16)
+    # plt.ylim(0.5, 2.5)
+    
+    
+    # uncomment for error bar plots of mode 2 particle proportions with material type on x-axis for lumped tests
+
+    mode2_props = []
+    errs = []
+    for mode2_tb_arr, burn_time_arr in zip(lumped_mode2_tbs, lumped_burn_times):
+        if len(burn_time_arr) < 1:
+            mode2_props.append(np.nan)
+            errs.append(np.nan)
+        else:
+            mode2_props.append(len(mode2_tb_arr)/len(burn_time_arr))
+            p = len(mode2_tb_arr)/len(burn_time_arr)
+            n = len(burn_time_arr)
+            errs.append(np.sqrt(p*(1-p)/n))
+    plt.figure()
+    names_to_plot = [lumped_names[i] for i in range(len(lumped_names)) if not np.isnan(errs[i])]
+    props_to_plot = [mp for mp in mode2_props if not np.isnan(mp)]
+    errs = [err for err in errs if not np.isnan(err)]
+    plt.errorbar(names_to_plot, props_to_plot, yerr = errs, fmt='none', color='k', alpha=1, capsize=7)
+    plt.bar(names_to_plot, props_to_plot, alpha = 1)
+    plt.xticks(fontsize=10)
+    plt.yticks(fontsize=10)
+    plt.subplots_adjust(left=0.2)
+    plt.margins(x=0.05)
+    # plt.title('Mode 2 Particle Proportions of Al and AlLi Tests')
+    # plt.xlabel('Particle Type')
+    plt.ylabel('Fraction of Particles Igniting in Mode 2', fontsize=13)
+    
+
+
+    # uncomment for CDF plots of burn times with several individual tests overlayed
+
+    # fig = plt.figure()
+    # for burn_time_arr, test_name in zip(burn_times, test_names):
+    #     if len(burn_time_arr) < 1:
+    #         continue
+    #     sorted_burn_times = np.sort(list(burn_time_arr))
+    #     cdf = np.arange(1, len(sorted_burn_times)+1) / len(sorted_burn_times)
+    #     plt.plot(sorted_burn_times, cdf, marker='none', linestyle='-')
+    #     plt.title('Burn Time CDF')
+    #     plt.xlabel('Burn Time (ms)')
+    #     plt.ylabel('Cumulative Probability')
+    # plt.legend([test_names[i] for i in files_to_analyze])
+
+    # uncomment for CDF plots of burn times with lumped tests overlayed
+
+    # fig = plt.figure()
+    # for burn_time_arr, test_name in zip(lumped_burn_times, lumped_names):
+    #     if len(burn_time_arr) < 1:
+    #         continue
+    #     sorted_burn_times = np.sort(list(burn_time_arr))
+    #     cdf = np.arange(1, len(sorted_burn_times)+1) / len(sorted_burn_times)
+    #     plt.plot(sorted_burn_times, cdf, marker='none', linestyle='-')
+    #     # plt.title('Burn Time CDF')
+    #     plt.xlabel('Burn Time (ms)', fontsize=14)
+    #     plt.ylabel('Cumulative Probability', fontsize=14)
+    # plt.xticks(fontsize=12)
+    # plt.yticks(fontsize=12)
+    # plt.subplots_adjust(left=0.2)
+    # plt.legend([lumped_names[pair[0]] for pair in tests_to_lump if pair[0] in files_to_analyze], fontsize=14)
+    # # hill_tb =  [0.4,  0.6,  0.6,  0.8,  0.8,  1,    1,    1.2,  1.2,  1.4,  1.4,  1.6,  1.6,  1.8,  1.8, 2,   2]
+    # # hill_cdf = [0.07, 0.07, 0.17, 0.17, 0.22, 0.22, 0.41, 0.41, 0.74, 0.74, 0.94, 0.94, 0.99, 0.99, 1,   1,   1]
+    # # plt.plot(hill_tb, hill_cdf, 'k-', label = 'Hill', linewidth = 0.75)
+    # # plt.legend(['Our Data', 'Hill'])
+    # # x = np.linspace(0, 2.5, 1000)  # From -4 to 4 standard deviations, with 1000 points
+    # # mean = 1.08
+    # # std_dev = 0.4
+    # # cdf_values = norm.cdf(x, loc=mean, scale=std_dev)
+    # # plt.plot(x, cdf_values, 'k-')
+
+
+    # uncomment for CDF plots of Mode 2 burn times with lumped tests overlayed
+
+    fig = plt.figure()
+    for burn_time_arr, test_name in zip(lumped_mode2_tbs, lumped_names):
+        if len(burn_time_arr) < 1:
+            continue
+        sorted_burn_times = np.sort(list(burn_time_arr))
+        cdf = np.arange(1, len(sorted_burn_times)+1) / len(sorted_burn_times)
+        plt.plot(sorted_burn_times, cdf, marker='none', linestyle='-')
+        # plt.title('Mode 2 Burn Time CDF')
+        plt.xlabel('Burning Time (ms)', fontsize=14)
+        plt.ylabel('Cumulative Probability', fontsize=14)
+    plt.xticks(fontsize=12)
+    plt.yticks(fontsize=12)
+    plt.subplots_adjust(left=0.2)
+    plot_names = [lumped_names[i] for i in range(len(lumped_names)) if len(lumped_mode2_tbs[i]) > 0]
+    print(plot_names)
+    plt.legend(plot_names, fontsize=14)
+    # hill_tb =  [0.4,  0.6,  0.6,  0.8,  0.8,  1,    1,    1.2,  1.2,  1.4,  1.4,  1.6,  1.6,  1.8,  1.8, 2,   2]
+    # hill_cdf = [0.07, 0.07, 0.17, 0.17, 0.22, 0.22, 0.41, 0.41, 0.74, 0.74, 0.94, 0.94, 0.99, 0.99, 1,   1,   1]
+    # plt.plot(hill_tb, hill_cdf, 'k-', label = 'Hill', linewidth = 0.75)
+    # x = np.linspace(0, 2.5, 1000)
+    # mean = 1.08
+    # std_dev = 0.4
+    # cdf_values = norm.cdf(x, loc=mean, scale=std_dev)
+    # plt.plot(x, cdf_values, 'k--')
+    # plt.legend(['H-5 Al', 'Hill et al. data', 'Hill et al. normal distribution fit'], fontsize=10)
+    # plt.title('H-5 Cumulative Burning Time Distribution', fontsize=16)
+    plt.grid(True)
+    plt.xlim(0, 4)
+    plt.ylim(0, 1)
 
     plt.show()

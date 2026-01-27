@@ -27,16 +27,18 @@ def image_calibration(origin_folder_path, calibration_path, write_folder, ymin=0
         calibrated_frame = np.clip(frame[ymin:ymax+1, xmin:xmax+1] - 16*cal_frame, 0, 65535).astype(np.uint16)
         base_name = path.split("\\")[-1].split("_")[0]
         if len(str(i)) == 1:
-            write_path = write_folder + "\\" + base_name + "_calibrated_0000" + str(i) + ".tif"
+            write_path = write_folder + "\\" + base_name + "_calibrated_00000" + str(i) + ".tif"
         elif len(str(i)) == 2:
-            write_path = write_folder + "\\" + base_name + "_calibrated_000" + str(i) + ".tif"
+            write_path = write_folder + "\\" + base_name + "_calibrated_0000" + str(i) + ".tif"
         elif len(str(i)) == 3:
-            write_path = write_folder + "\\" + base_name + "_calibrated_00" + str(i) + ".tif"
+            write_path = write_folder + "\\" + base_name + "_calibrated_000" + str(i) + ".tif"
         elif len(str(i)) == 4:
+            write_path = write_folder + "\\" + base_name + "_calibrated_00" + str(i) + ".tif"
+        elif len(str(i)) == 5:
             write_path = write_folder + "\\" + base_name + "_calibrated_0" + str(i) + ".tif"
         else:
             write_path = write_folder + "\\" + base_name + "_calibrated_" + str(i) + ".tif"
         cv.imwrite(write_path, calibrated_frame)
         
-        if i%20 == 0:
+        if i%1000 == 0:
             print(f"Processed frame {i+1}/{len(frame_paths)}: {write_path}")

@@ -7,3 +7,5 @@ image_calibration.py subtracts the background given an origin folder, calibratio
 particle_tracking.py tracks the particles in the calibrated frames, outputting a nested dictionary containing particle location and brightness for the frames that it exists
 
 these initial particle tracks include erroneous tracks. Further processing is done with tracked_particle_analyzer.py to remove erroneous tracks, and to classify particles into ignition modes to suit the experimental setup.
+
+Spectrometer_data_plot.py makes plots of spectrometer data (separate from particle tracking)
